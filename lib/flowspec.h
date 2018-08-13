@@ -103,6 +103,7 @@ static inline int flow_read_pxlen(const byte *part) { return part[1]; }
 /* A data structure for keep a state of flow builder */
 struct flow_builder {
   BUFFER_(byte) data;
+  struct cf_context *ctx;
   enum flow_type this_type;
   enum flow_type last_type;
   u16 last_op_offset;			/* Position of last operator in data.data */
@@ -113,15 +114,15 @@ struct flow_builder {
   } parts[FLOW_TYPE_MAX];		/* Indexing all components */
 };
 
-struct flow_builder *flow_builder_init(pool *pool);
+struct flow_builder *flow_builder_init(struct cf_context *ctx);
 void flow_builder_clear(struct flow_builder *fb);
 void flow_builder_set_type(struct flow_builder *fb, enum flow_type p);
 int flow_builder4_add_pfx(struct flow_builder *fb, const net_addr_ip4 *n4);
 int flow_builder6_add_pfx(struct flow_builder *fb, const net_addr_ip6 *n6, u32 offset);
 int flow_builder_add_op_val(struct flow_builder *fb, byte op, u32 value);
 int flow_builder_add_val_mask(struct flow_builder *fb, byte op, u32 value, u32 mask);
-net_addr_flow4 *flow_builder4_finalize(struct flow_builder *fb, linpool *lpool);
-net_addr_flow6 *flow_builder6_finalize(struct flow_builder *fb, linpool *lpool);
+net_addr_flow4 *flow_builder4_finalize(struct cf_context *ctx, struct flow_builder *fb);
+net_addr_flow6 *flow_builder6_finalize(struct cf_context *ctx, struct flow_builder *fb);
 
 
 /*
@@ -149,8 +150,8 @@ enum flow_validated_state flow4_validate(const byte *nlri, uint len);
 enum flow_validated_state flow6_validate(const byte *nlri, uint len);
 void flow_check_cf_value_length(struct flow_builder *fb, u32 expr);
 void flow_check_cf_bmk_values(struct flow_builder *fb, u8 neg, u32 val, u32 mask);
-void flow4_validate_cf(net_addr_flow4 *f);
-void flow6_validate_cf(net_addr_flow6 *f);
+void flow4_validate_cf(struct flow_builder *fb, net_addr_flow4 *f);
+void flow6_validate_cf(struct flow_builder *fb, net_addr_flow6 *f);
 
 
 /*

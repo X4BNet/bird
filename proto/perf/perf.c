@@ -307,7 +307,7 @@ perf_reconfigure(struct proto *P UNUSED, struct proto_config *CF UNUSED)
 }
 
 static void
-perf_copy_config(struct proto_config *dest UNUSED, struct proto_config *src UNUSED)
+perf_copy_config(struct config *new UNUSED, struct proto_config *dest UNUSED, struct proto_config *src UNUSED)
 {
 }
 

@@ -115,7 +115,7 @@ dev_if_notify(struct proto *p, uint c, struct iface *iface)
 }
 
 static void
-dev_postconfig(struct proto_config *CF)
+dev_postconfig(struct cf_context *ctx, struct proto_config *CF)
 {
   struct rt_dev_config *cf = (void *) CF;
   struct channel_config *ip4, *ip6, *ip6_sadr;
@@ -166,7 +166,7 @@ dev_reconfigure(struct proto *P, struct proto_config *CF)
 }
 
 static void
-dev_copy_config(struct proto_config *dest, struct proto_config *src)
+dev_copy_config(struct config *new, struct proto_config *dest, struct proto_config *src)
 {
   struct rt_dev_config *d = (void *) dest;
   struct rt_dev_config *s = (void *) src;
@@ -176,7 +176,7 @@ dev_copy_config(struct proto_config *dest, struct proto_config *src)
    * Copy suffices to be is shallow, because new nodes can be added, but
    * old nodes cannot be modified (although they contain internal lists).
    */
-  cfg_copy_list(&d->iface_list, &s->iface_list, sizeof(struct iface_patt));
+  cf_copy_list(new, &d->iface_list, &s->iface_list, sizeof(struct iface_patt));
 
   d->check_link = s->check_link;
 }

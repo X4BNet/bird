@@ -2218,7 +2218,7 @@ babel_rte_better(struct rte_storage *new, struct rte_storage *old)
 }
 
 static void
-babel_postconfig(struct proto_config *CF)
+babel_postconfig(struct cf_context *ctx, struct proto_config *CF)
 {
   struct babel_config *cf = (void *) CF;
   struct channel_config *ip4, *ip6, *ip6_sadr;

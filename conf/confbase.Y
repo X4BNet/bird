@@ -12,6 +12,7 @@ CF_HDR
 
 #include "nest/bird.h"
 #include "conf/conf.h"
+#include "conf/parser.h"
 #include "lib/resource.h"
 #include "lib/socket.h"
 #include "lib/timer.h"
@@ -25,17 +26,29 @@ CF_HDR
 
 /* FIXME: Turn on YYERROR_VERBOSE and work around lots of bison bugs? */
 
+CF_CTX
+
+void *yyscanner;
+struct sym_scope *sym_scope;
+struct config *new_config;
+BUFFER_(char) quoted_buffer;
+jmp_buf jmpbuf;
+linpool *cfg_mem;
+struct conf_order *order;
+
 CF_DEFINES
 
-static void
-check_u16(uint val)
+#define BFD_CHECK(use) do { if (use) cf_error("BFD not available"); } while (0)
+
+static inline void
+check_u16(struct cf_context *ctx, uint val)
 {
   if (val > 0xFFFF)
     cf_error("Value %u out of range (0-65535)", val);
 }
 
 #define cf_assert(cond, ...) do { if (!(cond)) cf_error(__VA_ARGS__); } while (0)
-static inline void cf_assert_symbol(const struct symbol *sym, uint class) {
+static inline void cf_assert_symbol(struct cf_context *ctx, const struct symbol *sym, uint class) {
   switch (class) {
     case SYM_PROTO: cf_assert(sym->class == SYM_PROTO, "Protocol name required"); break;
     case SYM_TEMPLATE: cf_assert(sym->class == SYM_TEMPLATE, "Protocol template name required"); break;
@@ -51,6 +64,10 @@ static inline void cf_assert_symbol(const struct symbol *sym, uint class) {
 
 CF_DECLS
 
+%define api.pure full
+%parse-param {struct cf_context *ctx}
+%param {void *yyscanner}
+
 %union {
   uint i;
   u32 i32;
@@ -62,6 +79,7 @@ CF_DECLS
   net_addr *net_ptr;
   struct symbol *s;
   const char *t;
+  const char *ct;
   struct rtable_config *r;
   struct channel_config *cc;
   struct channel *c;
@@ -150,14 +168,14 @@ conf: definition ;
 definition:
    DEFINE symbol '=' term ';' {
      struct f_val *val = cfg_allocz(sizeof(struct f_val));
-     if (f_eval(f_linearize($4), cfg_mem, val) > F_RETURN) cf_error("Runtime error");
-     cf_define_symbol($2, SYM_CONSTANT | val->type, val, val);
+     if (f_eval(f_linearize(ctx, $4), ctx->cfg_mem, val) > F_RETURN) cf_error("Runtime error");
+     cf_define_symbol(ctx, $2, SYM_CONSTANT | val->type, val, val);
    }
  ;
 
 expr:
    NUM
- | '(' term ')' { $$ = f_eval_int(f_linearize($2)); }
+ | '(' term ')' { $$ = f_eval_int(ctx, f_linearize(ctx, $2)); }
  | CF_SYM_KNOWN {
      if ($1->class != (SYM_CONSTANT | T_INT)) cf_error("Number constant expected");
      $$ = SYM_VAL($1).i; }

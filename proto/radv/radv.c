@@ -548,13 +548,13 @@ again:
 }
 
 static void
-radv_postconfig(struct proto_config *CF)
+radv_postconfig(struct cf_context *ctx, struct proto_config *CF)
 {
   // struct radv_config *cf = (void *) CF;
 
   /* Define default channel */
   if (EMPTY_LIST(CF->channels))
-    channel_config_new(NULL, net_label[NET_IP6], NET_IP6, CF);
+    channel_config_new(ctx, NULL, net_label[NET_IP6], NET_IP6, CF);
 }
 
 static struct proto *
@@ -732,7 +732,7 @@ radv_reconfigure(struct proto *P, struct proto_config *CF)
 }
 
 static void
-radv_copy_config(struct proto_config *dest, struct proto_config *src)
+radv_copy_config(struct config *new, struct proto_config *dest, struct proto_config *src)
 {
   struct radv_config *d = (struct radv_config *) dest;
   struct radv_config *s = (struct radv_config *) src;
@@ -741,7 +741,7 @@ radv_copy_config(struct proto_config *dest, struct proto_config *src)
   init_list(&d->patt_list);
 
   /* We copy pref_list, shallow copy suffices */
-  cfg_copy_list(&d->pref_list, &s->pref_list, sizeof(struct radv_prefix_config));
+  cf_copy_list(new, &d->pref_list, &s->pref_list, sizeof(struct radv_prefix_config));
 }
 
 static void

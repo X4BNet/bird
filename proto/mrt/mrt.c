@@ -751,7 +751,7 @@ mrt_dump_cleanup(struct cli *c)
 }
 
 void
-mrt_dump_cmd(struct mrt_dump_data *d)
+mrt_dump_cmd(struct cf_context *ctx, struct mrt_dump_data *d)
 {
   if (cli_access_restricted())
     return;
@@ -871,7 +871,7 @@ mrt_dump_bgp_state_change(struct mrt_bgp_data *d)
  */
 
 void
-mrt_check_config(struct proto_config *CF)
+mrt_check_config(struct cf_context *ctx, struct proto_config *CF)
 {
   struct mrt_config *cf = (void *) CF;
 
@@ -928,7 +928,7 @@ mrt_reconfigure(struct proto *P, struct proto_config *CF)
 }
 
 static void
-mrt_copy_config(struct proto_config *dest UNUSED, struct proto_config *src UNUSED)
+mrt_copy_config(struct config *new UNUSED, struct proto_config *dest UNUSED, struct proto_config *src UNUSED)
 {
   /* Do nothing */
 }

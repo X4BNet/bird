@@ -15,76 +15,78 @@ CF_HDR
 #include "lib/lists.h"
 #include "lib/mac.h"
 
+CF_CTX
+
+struct proto_config *this_proto;
+struct channel_config *this_channel;
+struct iface_patt *this_ipatt;
+struct iface_patt_node *this_ipn;
+list *this_p_list;
+struct password_item *this_p_item;
+int password_id;
+struct bfd_options *this_bfd_opts;
+uint proto_name_counter[PROTOCOL__MAX];   /* Counter for automatic name generation */
+
 CF_DEFINES
 
 static struct rtable_config *this_table;
-static struct proto_config *this_proto;
-static struct channel_config *this_channel;
-static struct iface_patt *this_ipatt;
-static struct iface_patt_node *this_ipn;
-/* static struct roa_table_config *this_roa_table; */
-static list *this_p_list;
-static struct password_item *this_p_item;
-static int password_id;
-static struct bfd_options *this_bfd_opts;
-
 static void
-iface_patt_check(void)
+iface_patt_check(struct cf_context *ctx)
 {
   struct iface_patt_node *pn;
 
-  WALK_LIST(pn, this_ipatt->ipn_list)
+  WALK_LIST(pn, ctx->this_ipatt->ipn_list)
     if (!pn->pattern || pn->prefix.type)
       cf_error("Interface name/mask expected, not IP prefix");
 }
 
 
 static inline void
-reset_passwords(void)
+reset_passwords(struct cf_context *ctx)
 {
-  this_p_list = NULL;
+  ctx->this_p_list = NULL;
 }
 
 static inline list *
-get_passwords(void)
+get_passwords(struct cf_context *ctx)
 {
-  list *rv = this_p_list;
-  this_p_list = NULL;
+  list *rv = ctx->this_p_list;
+  ctx->this_p_list = NULL;
   return rv;
 }
 
 static inline void
-init_bfd_opts(struct bfd_options **opts)
+init_bfd_opts(struct cf_context *ctx, struct bfd_options **opts)
 {
-  cf_check_bfd(1);
+  BFD_CHECK(1);
 
   if (! *opts)
-    *opts = bfd_new_options();
+    *opts = bfd_new_options(ctx->new_config);
 }
 
 static inline void
-open_bfd_opts(struct bfd_options **opts)
+open_bfd_opts(struct cf_context *ctx, struct bfd_options **opts)
 {
-  init_bfd_opts(opts);
-  this_bfd_opts = *opts;
+  init_bfd_opts(ctx, opts);
+  ctx->this_bfd_opts = *opts;
 }
 
 static inline void
-close_bfd_opts(void)
+close_bfd_opts(struct cf_context *ctx)
 {
-  this_bfd_opts = NULL;
+  ctx->this_bfd_opts = NULL;
 }
 
 static void
-proto_postconfig(void)
+proto_postconfig(struct cf_context *ctx)
 {
-  CALL(this_proto->protocol->postconfig, this_proto);
-  this_channel = NULL;
-  this_proto = NULL;
+  CALL(ctx->this_proto->protocol->postconfig, ctx, ctx->this_proto);
+  ctx->this_channel = NULL;
+  ctx->this_proto = NULL;
 }
 
 
-#define DIRECT_CFG ((struct rt_dev_config *) this_proto)
+#define DIRECT_CFG ((struct rt_dev_config *) ctx->this_proto)
 
 CF_DECLS
 
@@ -134,13 +136,13 @@ CF_GRAMMAR
 conf: rtrid ;
 
 rtrid:
-   ROUTER ID idval ';' { new_config->router_id = $3; }
- | ROUTER ID FROM iface_patt ';' { new_config->router_id_from = this_ipatt; }
+   ROUTER ID idval ';' { ctx->new_config->router_id = $3; }
+ | ROUTER ID FROM iface_patt ';' { ctx->new_config->router_id_from = ctx->this_ipatt; }
  ;
 
 idval:
    NUM { $$ = $1; }
- | '(' term ')' { $$ = f_eval_int(f_linearize($2)); }
+ | '(' term ')' { $$ = f_eval_int(ctx, f_linearize(ctx, $2)); }
  | IP4 { $$ = ip4_to_u32($1); }
  | CF_SYM_KNOWN {
      if ($1->class == (SYM_CONSTANT | T_INT) || $1->class == (SYM_CONSTANT | T_QUAD))
@@ -154,11 +156,11 @@ idval:
 
 conf: hostname_override ;
 
-hostname_override: HOSTNAME text ';' { new_config->hostname = $2; } ;
+hostname_override: HOSTNAME text ';' { ctx->new_config->hostname = $2; } ;
 
 conf: gr_opts ;
 
-gr_opts: GRACEFUL RESTART WAIT expr ';' { new_config->gr_wait = $4; } ;
+gr_opts: GRACEFUL RESTART WAIT expr ';' { ctx->new_config->gr_wait = $4; } ;
 
 
 /* Network types (for tables, channels) */
@@ -206,7 +208,7 @@ table_opt_list:
 
 table: net_type TABLE symbol table_sorted {
    struct rtable_config *cf;
-   cf = rt_new_table($3, $1);
+   cf = rt_new_table(ctx, $3, $1);
    cf->sorted = $4;
    this_table = cf;
   }
@@ -221,12 +223,12 @@ table: net_type TABLE symbol table_sorted {
 
 conf: default_table_item ;
 
-default_table_item: DEFAULT TABLE { this_table = new_config->def_table_attrs; } table_item ;
+default_table_item: DEFAULT TABLE { this_table = ctx->new_config->def_table_attrs; } table_item ;
 
 
 /* Definition of protocols */
 
-conf: proto { proto_postconfig(); } ;
+conf: proto { proto_postconfig(ctx); } ;
 
 proto_start:
    PROTOCOL { $$ = SYM_PROTO; }
@@ -235,72 +237,72 @@ proto_start:
 
 proto_name:
    /* EMPTY */ {
-     struct symbol *s = cf_default_name(this_proto->protocol->template, &this_proto->protocol->name_counter);
-     s->class = this_proto->class;
-     s->proto = this_proto;
-     this_proto->name = s->name;
+     struct symbol *s = cf_default_name(ctx, ctx->this_proto->protocol->template, &ctx->proto_name_counter[ctx->this_proto->protocol->class]);
+     s->class = ctx->this_proto->class;
+     s->proto = ctx->this_proto;
+     ctx->this_proto->name = s->name;
      }
  | symbol {
-     cf_define_symbol($1, this_proto->class, proto, this_proto);
-     this_proto->name = $1->name;
+     cf_define_symbol(ctx, $1, ctx->this_proto->class, proto, ctx->this_proto);
+     ctx->this_proto->name = $1->name;
    }
  | FROM CF_SYM_KNOWN {
      if (($2->class != SYM_TEMPLATE) && ($2->class != SYM_PROTO)) cf_error("Template or protocol name expected");
 
-     struct symbol *s = cf_default_name(this_proto->protocol->template, &this_proto->protocol->name_counter);
-     s->class = this_proto->class;
-     s->proto = this_proto;
-     this_proto->name = s->name;
+     struct symbol *s = cf_default_name(ctx, ctx->this_proto->protocol->template, &ctx->proto_name_counter[ctx->this_proto->protocol->class]);
+     s->class = ctx->this_proto->class;
+     s->proto = ctx->this_proto;
+     ctx->this_proto->name = s->name;
 
-     proto_copy_config(this_proto, $2->proto);
+     proto_copy_config(ctx, ctx->this_proto, $2->proto);
    }
  | symbol FROM CF_SYM_KNOWN {
      if (($3->class != SYM_TEMPLATE) && ($3->class != SYM_PROTO)) cf_error("Template or protocol name expected");
 
-     cf_define_symbol($1, this_proto->class, proto, this_proto);
-     this_proto->name = $1->name;
+     cf_define_symbol(ctx, $1, ctx->this_proto->class, proto, ctx->this_proto);
+     ctx->this_proto->name = $1->name;
 
-     proto_copy_config(this_proto, $3->proto);
+     proto_copy_config(ctx, ctx->this_proto, $3->proto);
    }
  ;
 
 proto_item:
    /* EMPTY */
- | DISABLED bool { this_proto->disabled = $2; }
- | DEBUG debug_mask { this_proto->debug = $2; }
- | MRTDUMP mrtdump_mask { this_proto->mrtdump = $2; }
- | ROUTER ID idval { this_proto->router_id = $3; }
- | DESCRIPTION text { this_proto->dsc = $2; }
- | VRF text { IFACE_LOCK; this_proto->vrf = if_get_by_name($2); IFACE_UNLOCK; this_proto->vrf_set = 1; }
- | VRF DEFAULT { this_proto->vrf = NULL; this_proto->vrf_set = 1; }
+ | DISABLED bool { ctx->this_proto->disabled = $2; }
+ | DEBUG debug_mask { ctx->this_proto->debug = $2; }
+ | MRTDUMP mrtdump_mask { ctx->this_proto->mrtdump = $2; }
+ | ROUTER ID idval { ctx->this_proto->router_id = $3; }
+ | DESCRIPTION text { ctx->this_proto->dsc = $2; }
+ | VRF text { IFACE_LOCK; ctx->this_proto->vrf = if_get_by_name($2); IFACE_UNLOCK; ctx->this_proto->vrf_set = 1; }
+ | VRF DEFAULT { ctx->this_proto->vrf = NULL; ctx->this_proto->vrf_set = 1; }
  ;
 
 
 channel_start: net_type
 {
-  $$ = this_channel = channel_config_get(NULL, net_label[$1], $1, this_proto);
+  $$ = ctx->this_channel = channel_config_get(ctx, NULL, net_label[$1], $1, ctx->this_proto);
 };
 
 channel_item_:
    TABLE rtable {
-     if (this_channel->net_type && ($2->addr_type != this_channel->net_type))
+     if (ctx->this_channel->net_type && ($2->addr_type != ctx->this_channel->net_type))
        cf_error("Incompatible table type");
-     this_channel->table = $2;
+     ctx->this_channel->table = $2;
    }
- | IMPORT imexport { this_channel->in_filter = $2; }
- | EXPORT imexport { this_channel->out_filter = $2; }
- | RECEIVE LIMIT limit_spec { this_channel->rx_limit = $3; }
- | IMPORT LIMIT limit_spec { this_channel->in_limit = $3; }
- | EXPORT LIMIT limit_spec { this_channel->out_limit = $3; }
- | PREFERENCE expr { this_channel->preference = $2; check_u16($2); }
- | IMPORT KEEP FILTERED bool { this_channel->in_keep_filtered = $4; }
- | RPKI RELOAD bool { this_channel->rpki_reload = $3; }
+ | IMPORT imexport { ctx->this_channel->in_filter = $2; }
+ | EXPORT imexport { ctx->this_channel->out_filter = $2; }
+ | RECEIVE LIMIT limit_spec { ctx->this_channel->rx_limit = $3; }
+ | IMPORT LIMIT limit_spec { ctx->this_channel->in_limit = $3; }
+ | EXPORT LIMIT limit_spec { ctx->this_channel->out_limit = $3; }
+ | PREFERENCE expr { ctx->this_channel->preference = $2; check_u16(ctx, $2); }
+ | IMPORT KEEP FILTERED bool { ctx->this_channel->in_keep_filtered = $4; }
+ | RPKI RELOAD bool { ctx->this_channel->rpki_reload = $3; }
  ;
 
 /* To avoid grammar collision in Pipe protocol */
 channel_item:
    channel_item_
- | DEBUG debug_mask { this_channel->debug = $2; }
+ | DEBUG debug_mask { ctx->this_channel->debug = $2; }
  ;
 
 channel_opts:
@@ -315,16 +317,16 @@ channel_opt_list:
 
 channel_end:
 {
-  if (!this_channel->table)
+  if (!ctx->this_channel->table)
     cf_error("Routing table not specified");
 
-  this_channel = NULL;
+  ctx->this_channel = NULL;
 };
 
 proto_channel: channel_start channel_opt_list channel_end;
 
 
-rtable: CF_SYM_KNOWN { cf_assert_symbol($1, SYM_TABLE); $$ = $1->table; } ;
+rtable: CF_SYM_KNOWN { cf_assert_symbol(ctx, $1, SYM_TABLE); $$ = $1->table; } ;
 
 imexport:
    FILTER filter { $$ = $2; }
@@ -350,11 +352,11 @@ limit_spec:
 conf: debug_default ;
 
 debug_default:
-   DEBUG PROTOCOLS debug_mask { new_config->proto_default_debug = $3; }
- | DEBUG CHANNELS debug_mask { new_config->channel_default_debug = $3; }
- | DEBUG COMMANDS expr { new_config->cli_debug = $3; }
- | DEBUG PIPE bool { new_config->pipe_debug = $3; }
- | DEBUG TABLES bool { new_config->table_debug = $3; }
+   DEBUG PROTOCOLS debug_mask { ctx->new_config->proto_default_debug = $3; }
+ | DEBUG CHANNELS debug_mask { ctx->new_config->channel_default_debug = $3; }
+ | DEBUG COMMANDS expr { ctx->new_config->cli_debug = $3; }
+ | DEBUG PIPE bool { ctx->new_config->pipe_debug = $3; }
+ | DEBUG TABLES bool { ctx->new_config->table_debug = $3; }
  ;
 
 /* MRTDUMP PROTOCOLS is in systep/unix/config.Y */
@@ -362,10 +364,10 @@ debug_default:
 conf: timeformat_base ;
 
 timeformat_which:
-   ROUTE { $$ = &new_config->tf_route; }
- | PROTOCOL { $$ = &new_config->tf_proto; }
- | BASE { $$ = &new_config->tf_base; }
- | LOG { $$ = &new_config->tf_log; }
+   ROUTE { $$ = &ctx->new_config->tf_route; }
+ | PROTOCOL { $$ = &ctx->new_config->tf_proto; }
+ | BASE { $$ = &ctx->new_config->tf_base; }
+ | LOG { $$ = &ctx->new_config->tf_log; }
  ;
 
 timeformat_spec:
@@ -389,19 +391,19 @@ timeformat_base:
 iface_patt_node_init:
    /* EMPTY */ {
      struct iface_patt_node *ipn = cfg_allocz(sizeof(struct iface_patt_node));
-     add_tail(&this_ipatt->ipn_list, NODE ipn);
-     this_ipn = ipn;
+     add_tail(&ctx->this_ipatt->ipn_list, NODE ipn);
+     ctx->this_ipn = ipn;
    }
  ;
 
 iface_patt_node_body:
-   TEXT { this_ipn->pattern = $1; /* this_ipn->prefix stays zero */ }
- | opttext net_or_ipa { this_ipn->pattern = $1; this_ipn->prefix = $2; }
+   TEXT { ctx->this_ipn->pattern = $1; /* ctx->this_ipn->prefix stays zero */ }
+ | opttext net_or_ipa { ctx->this_ipn->pattern = $1; ctx->this_ipn->prefix = $2; }
  ;
 
 iface_negate:
-       { this_ipn->positive = 1; }
- | '-' { this_ipn->positive = 0; }
+       { ctx->this_ipn->positive = 1; }
+ | '-' { ctx->this_ipn->positive = 0; }
  ;
 
 iface_patt_node:
@@ -415,12 +417,12 @@ iface_patt_list:
  ;
 
 /* For name/mask-only iface patterns */
-iface_patt_list_nopx: iface_patt_list { iface_patt_check(); }
+iface_patt_list_nopx: iface_patt_list { iface_patt_check(ctx); }
 
 iface_patt_init: {
    /* Generic this_ipatt init */
-   this_ipatt = cfg_allocz(sizeof(struct iface_patt));
-   init_list(&this_ipatt->ipn_list);
+   ctx->this_ipatt = cfg_allocz(sizeof(struct iface_patt));
+   init_list(&ctx->this_ipatt->ipn_list);
  }
  ;
 
@@ -438,7 +440,7 @@ tos:
 proto: dev_proto '}' ;
 
 dev_proto_start: proto_start DIRECT {
-     this_proto = proto_config_new(&proto_device, $1);
+     ctx->this_proto = proto_config_new(ctx->new_config, &proto_device, $1);
      init_list(&DIRECT_CFG->iface_list);
    }
  ;
@@ -453,9 +455,9 @@ dev_proto:
 
 dev_iface_init:
    /* EMPTY */ {
-     this_ipatt = cfg_allocz(sizeof(struct iface_patt));
-     add_tail(&DIRECT_CFG->iface_list, NODE this_ipatt);
-     init_list(&this_ipatt->ipn_list);
+     ctx->this_ipatt = cfg_allocz(sizeof(struct iface_patt));
+     add_tail(&DIRECT_CFG->iface_list, NODE ctx->this_ipatt);
+     init_list(&ctx->this_ipatt->ipn_list);
    }
  ;
 
@@ -522,34 +524,37 @@ password_item:
 
 password_item_begin:
    PASSWORD text {
-     if (!this_p_list) {
-	this_p_list = cfg_allocz(sizeof(list));
-	init_list(this_p_list);
-	password_id = 1;
+     if (!ctx->this_p_list) {
+	ctx->this_p_list = cfg_allocz(sizeof(list));
+	init_list(ctx->this_p_list);
+	ctx->password_id = 1;
      }
-     this_p_item = cfg_allocz(sizeof(struct password_item));
-     this_p_item->password = $2;
-     this_p_item->length = strlen($2);
-     this_p_item->genfrom = 0;
-     this_p_item->gento = TIME_INFINITY;
-     this_p_item->accfrom = 0;
-     this_p_item->accto = TIME_INFINITY;
-     this_p_item->id = password_id++;
-     this_p_item->alg = ALG_UNDEFINED;
-     add_tail(this_p_list, &this_p_item->n);
+     struct password_item *pi = cfg_alloc(sizeof (struct password_item));
+     *pi = (struct password_item) {
+       .password = $2,
+       .length = strlen($2),
+       .genfrom = 0,
+       .gento = TIME_INFINITY,
+       .accfrom = 0,
+       .accto = TIME_INFINITY,
+       .id = ctx->password_id++,
+       .alg = ALG_UNDEFINED,
+     };
+     ctx->this_p_item = pi;
+     add_tail(ctx->this_p_list, &pi->n);
    }
 ;
 
 password_item_params:
    /* empty */ { }
- | GENERATE FROM time ';' password_item_params { this_p_item->genfrom = $3; }
- | GENERATE TO time ';' password_item_params { this_p_item->gento = $3; }
- | ACCEPT FROM time ';' password_item_params { this_p_item->accfrom = $3; }
- | ACCEPT TO time ';' password_item_params { this_p_item->accto = $3; }
- | FROM time ';' password_item_params { this_p_item->genfrom = this_p_item->accfrom = $2; }
- | TO time ';' password_item_params { this_p_item->gento = this_p_item->accto = $2; }
- | ID expr ';' password_item_params { this_p_item->id = $2; if ($2 > 255) cf_error("Password ID must be in range 0-255"); }
- | ALGORITHM password_algorithm ';' password_item_params { this_p_item->alg = $2; }
+ | GENERATE FROM time ';' password_item_params { ctx->this_p_item->genfrom = $3; }
+ | GENERATE TO time ';' password_item_params { ctx->this_p_item->gento = $3; }
+ | ACCEPT FROM time ';' password_item_params { ctx->this_p_item->accfrom = $3; }
+ | ACCEPT TO time ';' password_item_params { ctx->this_p_item->accto = $3; }
+ | FROM time ';' password_item_params { ctx->this_p_item->genfrom = ctx->this_p_item->accfrom = $2; }
+ | TO time ';' password_item_params { ctx->this_p_item->gento = ctx->this_p_item->accto = $2; }
+ | ID expr ';' password_item_params { ctx->this_p_item->id = $2; if ($2 > 255) cf_error("Password ID must be in range 0-255"); }
+ | ALGORITHM password_algorithm ';' password_item_params { ctx->this_p_item->alg = $2; }
  ;
 
 password_algorithm:
@@ -569,13 +574,13 @@ password_algorithm:
 /* BFD options */
 
 bfd_item:
-   INTERVAL expr_us { this_bfd_opts->min_rx_int = this_bfd_opts->min_tx_int = $2; }
- | MIN RX INTERVAL expr_us { this_bfd_opts->min_rx_int = $4; }
- | MIN TX INTERVAL expr_us { this_bfd_opts->min_tx_int = $4; }
- | IDLE TX INTERVAL expr_us { this_bfd_opts->idle_tx_int = $4; }
- | MULTIPLIER expr { this_bfd_opts->multiplier = $2; }
- | PASSIVE bool { this_bfd_opts->passive = $2; this_bfd_opts->passive_set = 1; }
- | GRACEFUL { this_bfd_opts->mode = BGP_BFD_GRACEFUL; }
+   INTERVAL expr_us { ctx->this_bfd_opts->min_rx_int = ctx->this_bfd_opts->min_tx_int = $2; }
+ | MIN RX INTERVAL expr_us { ctx->this_bfd_opts->min_rx_int = $4; }
+ | MIN TX INTERVAL expr_us { ctx->this_bfd_opts->min_tx_int = $4; }
+ | IDLE TX INTERVAL expr_us { ctx->this_bfd_opts->idle_tx_int = $4; }
+ | MULTIPLIER expr { ctx->this_bfd_opts->multiplier = $2; }
+ | PASSIVE bool { ctx->this_bfd_opts->passive = $2; ctx->this_bfd_opts->passive_set = 1; }
+ | GRACEFUL { ctx->this_bfd_opts->mode = BGP_BFD_GRACEFUL; }
  ;
 
 bfd_items:
@@ -603,7 +608,7 @@ CF_CLI(SHOW PROTOCOLS ALL, proto_patt2, [<protocol> | \"<pattern>\"], [[Show rou
 { proto_apply_cmd($4, proto_cmd_show, 0, 1); } ;
 
 optproto:
-   CF_SYM_KNOWN { cf_assert_symbol($1, SYM_PROTO); $$ = $1; }
+   CF_SYM_KNOWN { cf_assert_symbol(ctx, $1, SYM_PROTO); $$ = $1; }
  | /* empty */ { $$ = NULL; }
  ;
 
@@ -622,7 +627,7 @@ r_args:
      $$ = cfg_allocz(sizeof(struct rt_show_data));
      init_list(&($$->tables));
      $$->filter = FILTER_ACCEPT;
-     $$->running_on_config = new_config->fallback;
+     $$->ctx = ctx;
    }
  | r_args net_any {
      $$ = $1;
@@ -636,7 +641,7 @@ r_args:
      $$->addr = $3;
    }
  | r_args TABLE CF_SYM_KNOWN {
-     cf_assert_symbol($3, SYM_TABLE);
+     cf_assert_symbol(ctx, $3, SYM_TABLE);
      $$ = $1;
      rt_show_add_table($$, $3->table->table);
      $$->tables_defined_by = RSD_TDB_DIRECT;
@@ -681,7 +686,7 @@ r_args:
      $$->filtered = 1;
    }
  | r_args export_mode CF_SYM_KNOWN {
-     cf_assert_symbol($3, SYM_PROTO);
+     cf_assert_symbol(ctx, $3, SYM_PROTO);
      struct proto_config *c = (struct proto_config *) $3->proto;
      $$ = $1;
      if ($$->export_mode) cf_error("Export specified twice");
@@ -698,7 +703,7 @@ r_args:
      $$->tables_defined_by = RSD_TDB_INDIRECT;
    }
  | r_args PROTOCOL CF_SYM_KNOWN {
-     cf_assert_symbol($3, SYM_PROTO);
+     cf_assert_symbol(ctx, $3, SYM_PROTO);
      struct proto_config *c = (struct proto_config *) $3->proto;
      $$ = $1;
      if ($$->show_protocol) cf_error("Protocol specified twice");
@@ -788,7 +793,7 @@ channel_sym:
 
 channel_arg:
    CF_SYM_KNOWN '.' channel_sym {
-     cf_assert_symbol($1, SYM_PROTO);
+     cf_assert_symbol(ctx, $1, SYM_PROTO);
      struct proto *p =  $1->proto->proto;
      if (!p) cf_error("%s is not a protocol", $1->name);
      $$ = proto_find_channel_by_name(p, $3);
@@ -836,7 +841,7 @@ CF_CLI(DUMP FILTER ALL,,, [[Dump all filters in linearized form]])
 { filters_dump_all(); cli_msg(0, ""); } ;
 
 CF_CLI(EVAL, term, <expr>, [[Evaluate an expression]])
-{ cmd_eval(f_linearize($2)); } ;
+{ cmd_eval(f_linearize(ctx, $2)); } ;
 
 CF_CLI_HELP(ECHO, ..., [[Control echoing of log messages]])
 CF_CLI(ECHO, echo_mask echo_size, (all | off | { debug|trace|info|remote|warning|error|auth [, ...] }) [<buffer-size>], [[Control echoing of log messages]]) {
@@ -888,13 +893,13 @@ CF_CLI(RESTRICT,,,[[Restrict current CLI session to safe commands]])
 { this_cli->restricted = 1; cli_msg(16, "Access restricted"); } ;
 
 proto_patt:
-   CF_SYM_KNOWN { cf_assert_symbol($1, SYM_PROTO); $$.ptr = $1; $$.patt = 0; }
+   CF_SYM_KNOWN { cf_assert_symbol(ctx, $1, SYM_PROTO); $$.ptr = $1; $$.patt = 0; }
  | ALL  { $$.ptr = NULL; $$.patt = 1; }
  | TEXT { $$.ptr = $1; $$.patt = 1; }
  ;
 
 proto_patt2:
-   CF_SYM_KNOWN { cf_assert_symbol($1, SYM_PROTO); $$.ptr = $1; $$.patt = 0; }
+   CF_SYM_KNOWN { cf_assert_symbol(ctx, $1, SYM_PROTO); $$.ptr = $1; $$.patt = 0; }
  |      { $$.ptr = NULL; $$.patt = 1; }
  | TEXT { $$.ptr = $1; $$.patt = 1; }
  ;

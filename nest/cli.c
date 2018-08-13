@@ -116,10 +116,9 @@ cli_alloc_out(cli *c, int size)
  * If you want to write to the current CLI output, you can use the cli_msg()
  * macro instead.
  */
-void
-cli_printf(cli *c, int code, char *msg, ...)
+static void
+cli_vprintf(cli *c, int code, const char *msg, va_list args)
 {
-  va_list args;
   byte buf[CLI_LINE_SIZE];
   int cd = code;
   int errcode;
@@ -147,9 +146,7 @@ cli_printf(cli *c, int code, char *msg, ...)
     }
 
   c->last_reply = cd;
-  va_start(args, msg);
   cnt = bvsnprintf(buf+size, sizeof(buf)-size-1, msg, args);
-  va_end(args);
   if (cnt < 0)
     {
       cli_printf(c, errcode, "<line overflow>");
@@ -158,6 +155,15 @@ cli_printf(cli *c, int code, char *msg, ...)
   size += cnt;
   buf[size++] = '\n';
   memcpy(cli_alloc_out(c, size), buf, size);
+}
+
+void
+cli_printf(cli *c, int code, const char *msg, ...)
+{
+  va_list args;
+  va_start(args, msg);
+  cli_vprintf(c, code, msg, args);
+  va_end(args);
 }
 
 static void
@@ -204,6 +210,7 @@ cli_hello(cli *c)
   c->cont = NULL;
 }
 
+
 static void
 cli_free_out(cli *c)
 {
@@ -229,52 +236,69 @@ cli_written(cli *c)
   ev_schedule(c->event);
 }
 
-
-static byte *cli_rh_pos;
-static uint cli_rh_len;
-static int cli_rh_trick_flag;
-struct cli *this_cli;
+struct cli_conf_order {
+  struct conf_order co;
+  struct cli *cli;
+  const char *pos;
+  uint len;
+};
 
 static int
-cli_cmd_read_hook(byte *buf, uint max, UNUSED int fd)
+cli_cmd_read_hook(struct conf_order *co, byte *buf, uint max)
 {
-  if (!cli_rh_trick_flag)
-    {
-      cli_rh_trick_flag = 1;
-      buf[0] = '!';
-      return 1;
-    }
-  if (max > cli_rh_len)
-    max = cli_rh_len;
-  memcpy(buf, cli_rh_pos, max);
-  cli_rh_pos += max;
-  cli_rh_len -= max;
+  struct cli_conf_order *cco = (struct cli_conf_order *) co;
+
+  if (max > cco->len)
+    max = cco->len;
+
+  memcpy(buf, cco->pos, cco->len);
+  cco->pos += max;
+  cco->len -= max;
   return max;
 }
 
 static void
+cli_cmd_error(struct conf_order *co, const char *msg, va_list args)
+{
+  struct cli_conf_order *cco = (struct cli_conf_order *) co;
+  cli_vprintf(cco->cli, 9001, msg, args);
+}
+
+extern _Thread_local int cli_rh_trick_flag;
+_Thread_local struct cli *this_cli;
+
+static void
 cli_command(struct cli *c)
 {
-  struct config f;
-  int res;
+  struct conf_state state = {
+    .name = "",
+    .lino = 1
+  };
+
+  struct cli_conf_order o = {
+    .co = {
+      .ctx = NULL,
+      .state = &state,
+      .cf_read_hook = cli_cmd_read_hook,
+      .cf_include = NULL,
+      .cf_outclude = NULL,
+      .cf_error_hook = cli_cmd_error,
+      .lp = c->parser_pool,
+      .pool = c->pool,
+    },
+    .pos = c->rx_buf,
+    .len = strlen(c->rx_buf),
+    .cli = c,
+  };
+
+  this_cli = c;
+  cli_rh_trick_flag = 1;
 
   if (config->cli_debug > 1)
     log(L_TRACE "CLI: %s", c->rx_buf);
-  bzero(&f, sizeof(f));
-  f.mem = c->parser_pool;
-  f.pool = rp_new(c->pool, "Config");
-  init_list(&f.symbols);
-  cf_read_hook = cli_cmd_read_hook;
-  cli_rh_pos = c->rx_buf;
-  cli_rh_len = strlen(c->rx_buf);
-  cli_rh_trick_flag = 0;
-  this_cli = c;
-  lp_flush(c->parser_pool);
-  res = cli_parse(&f);
-  if (!res)
-    cli_printf(c, 9001, f.err_msg);
 
-  config_free(&f);
+  lp_flush(c->parser_pool);
+  cli_parse(&o.co);
 }
 
 static void
@@ -318,8 +342,8 @@ cli_new(void *priv)
   c->event->hook = cli_event;
   c->event->data = c;
   c->cont = cli_hello;
-  c->parser_pool = lp_new_default(c->pool);
   c->show_pool = lp_new_default(c->pool);
+  c->parser_pool = lp_new_default(c->pool);
   c->rx_buf = mb_alloc(c->pool, CLI_RX_BUF_SIZE);
   ev_schedule(c->event);
   return c;

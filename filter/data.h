@@ -172,7 +172,7 @@ struct f_trie
   struct f_trie_node root;		/* Root trie node */
 };
 
-struct f_tree *f_new_tree(void);
+struct f_tree *f_new_tree(struct cf_context *ctx);
 struct f_tree *build_tree(struct f_tree *);
 const struct f_tree *find_tree(const struct f_tree *t, const struct f_val *val);
 int same_tree(const struct f_tree *t0, const struct f_tree *t2);

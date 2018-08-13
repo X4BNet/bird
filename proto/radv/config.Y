@@ -11,20 +11,21 @@ CF_HDR
 
 #include "proto/radv/radv.h"
 
+CF_CTX
+
+struct radv_prefix_config *this_radv_prefix;
+struct radv_rdnss_config this_radv_rdnss;
+struct radv_dnssl_config this_radv_dnssl;
+list radv_dns_list;	/* Used by radv_rdnss and radv_dnssl */
+u8 radv_mult_val;	/* Used by radv_mult for second return value */
+
 CF_DEFINES
 
-#define RADV_CFG ((struct radv_config *) this_proto)
-#define RADV_IFACE ((struct radv_iface_config *) this_ipatt)
-#define RADV_PREFIX this_radv_prefix
-#define RADV_RDNSS (&this_radv_rdnss)
-#define RADV_DNSSL (&this_radv_dnssl)
-
-static struct radv_prefix_config *this_radv_prefix;
-static struct radv_rdnss_config this_radv_rdnss;
-static struct radv_dnssl_config this_radv_dnssl;
-static list radv_dns_list;	/* Used by radv_rdnss and radv_dnssl */
-static u8 radv_mult_val;	/* Used by radv_mult for second return value */
-
+#define RADV_CFG ((struct radv_config *) ctx->this_proto)
+#define RADV_IFACE ((struct radv_iface_config *) ctx->this_ipatt)
+#define RADV_PREFIX ctx->this_radv_prefix
+#define RADV_RDNSS (&ctx->this_radv_rdnss)
+#define RADV_DNSSL (&ctx->this_radv_dnssl)
 
 CF_DECLS
 
@@ -45,7 +46,7 @@ proto: radv_proto ;
 
 radv_proto_start: proto_start RADV
 {
-  this_proto = proto_config_new(&proto_radv, $1);
+  ctx->this_proto = proto_config_new(ctx->new_config, &proto_radv, $1);
 
   init_list(&RADV_CFG->patt_list);
   init_list(&RADV_CFG->pref_list);
@@ -57,9 +58,9 @@ radv_proto_item:
    proto_item
  | proto_channel
  | INTERFACE radv_iface
- | PREFIX radv_prefix { add_tail(&RADV_CFG->pref_list, NODE this_radv_prefix); }
- | RDNSS { init_list(&radv_dns_list); } radv_rdnss { add_tail_list(&RADV_CFG->rdnss_list, &radv_dns_list); }
- | DNSSL { init_list(&radv_dns_list); } radv_dnssl { add_tail_list(&RADV_CFG->dnssl_list, &radv_dns_list); }
+ | PREFIX radv_prefix { add_tail(&RADV_CFG->pref_list, NODE ctx->this_radv_prefix); }
+ | RDNSS { init_list(&ctx->radv_dns_list); } radv_rdnss { add_tail_list(&RADV_CFG->rdnss_list, &ctx->radv_dns_list); }
+ | DNSSL { init_list(&ctx->radv_dns_list); } radv_dnssl { add_tail_list(&RADV_CFG->dnssl_list, &ctx->radv_dns_list); }
  | TRIGGER net_ip6 { RADV_CFG->trigger = $2; }
  | PROPAGATE ROUTES bool { RADV_CFG->propagate_routes = $3; }
  ;
@@ -75,9 +76,9 @@ radv_proto:
 
 radv_iface_start:
 {
-  this_ipatt = cfg_allocz(sizeof(struct radv_iface_config));
-  add_tail(&RADV_CFG->patt_list, NODE this_ipatt);
-  init_list(&this_ipatt->ipn_list);
+  ctx->this_ipatt = cfg_allocz(sizeof(struct radv_iface_config));
+  add_tail(&RADV_CFG->patt_list, NODE ctx->this_ipatt);
+  init_list(&ctx->this_ipatt->ipn_list);
   init_list(&RADV_IFACE->pref_list);
   init_list(&RADV_IFACE->rdnss_list);
   init_list(&RADV_IFACE->dnssl_list);
@@ -120,9 +121,9 @@ radv_iface_item:
  | ROUTE PREFERENCE radv_preference { RADV_IFACE->route_preference = $3; }
  | PREFIX LINGER TIME expr { RADV_IFACE->prefix_linger_time = $4; }
  | ROUTE LINGER TIME expr { RADV_IFACE->route_linger_time = $4; }
- | PREFIX radv_prefix { add_tail(&RADV_IFACE->pref_list, NODE this_radv_prefix); }
- | RDNSS { init_list(&radv_dns_list); } radv_rdnss { add_tail_list(&RADV_IFACE->rdnss_list, &radv_dns_list); }
- | DNSSL { init_list(&radv_dns_list); } radv_dnssl { add_tail_list(&RADV_IFACE->dnssl_list, &radv_dns_list); }
+ | PREFIX radv_prefix { add_tail(&RADV_IFACE->pref_list, NODE ctx->this_radv_prefix); }
+ | RDNSS { init_list(&ctx->radv_dns_list); } radv_rdnss { add_tail_list(&RADV_IFACE->rdnss_list, &ctx->radv_dns_list); }
+ | DNSSL { init_list(&ctx->radv_dns_list); } radv_dnssl { add_tail_list(&RADV_IFACE->dnssl_list, &ctx->radv_dns_list); }
  | RDNSS LOCAL bool { RADV_IFACE->rdnss_local = $3; }
  | DNSSL LOCAL bool { RADV_IFACE->dnssl_local = $3; }
  ;
@@ -187,7 +188,7 @@ radv_iface:
 
 radv_prefix_start: net_ip6
 {
-  this_radv_prefix = cfg_allocz(sizeof(struct radv_prefix_config));
+  ctx->this_radv_prefix = cfg_allocz(sizeof(struct radv_prefix_config));
   RADV_PREFIX->prefix = *(net_addr_ip6 *) &($1);
 
   RADV_PREFIX->onlink = 1;
@@ -237,7 +238,7 @@ radv_prefix:
 radv_rdnss_node: ipa
 {
   struct radv_rdnss_config *cf = cfg_allocz(sizeof(struct radv_rdnss_config));
-  add_tail(&radv_dns_list, NODE cf);
+  add_tail(&ctx->radv_dns_list, NODE cf);
 
   cf->server = $1;
   cf->lifetime_mult = DEFAULT_DNS_LIFETIME_MULT;
@@ -251,16 +252,16 @@ radv_rdnss_start:
 
 radv_rdnss_item:
  | NS radv_rdnss_node
- | LIFETIME radv_mult { RADV_RDNSS->lifetime = $2; RADV_RDNSS->lifetime_mult = radv_mult_val; }
+ | LIFETIME radv_mult { RADV_RDNSS->lifetime = $2; RADV_RDNSS->lifetime_mult = ctx->radv_mult_val; }
  ;
 
 radv_rdnss_finish:
 {
-  if (EMPTY_LIST(radv_dns_list))
+  if (EMPTY_LIST(ctx->radv_dns_list))
     cf_error("No nameserver in RDNSS section");
 
   struct radv_rdnss_config *cf;
-  WALK_LIST(cf, radv_dns_list)
+  WALK_LIST(cf, ctx->radv_dns_list)
   {
     cf->lifetime = RADV_RDNSS->lifetime;
     cf->lifetime_mult = RADV_RDNSS->lifetime_mult;
@@ -281,7 +282,7 @@ radv_rdnss:
 radv_dnssl_node: TEXT
 {
   struct radv_dnssl_config *cf = cfg_allocz(sizeof(struct radv_dnssl_config));
-  add_tail(&radv_dns_list, NODE cf);
+  add_tail(&ctx->radv_dns_list, NODE cf);
 
   cf->domain = $1;
   cf->lifetime_mult = DEFAULT_DNS_LIFETIME_MULT;
@@ -298,16 +299,16 @@ radv_dnssl_start:
 
 radv_dnssl_item:
  | DOMAIN radv_dnssl_node
- | LIFETIME radv_mult { RADV_DNSSL->lifetime = $2; RADV_DNSSL->lifetime_mult = radv_mult_val; }
+ | LIFETIME radv_mult { RADV_DNSSL->lifetime = $2; RADV_DNSSL->lifetime_mult = ctx->radv_mult_val; }
  ;
 
 radv_dnssl_finish:
 {
-  if (EMPTY_LIST(radv_dns_list))
+  if (EMPTY_LIST(ctx->radv_dns_list))
     cf_error("No domain in DNSSL section");
 
   struct radv_dnssl_config *cf;
-  WALK_LIST(cf, radv_dns_list)
+  WALK_LIST(cf, ctx->radv_dns_list)
   {
     cf->lifetime = RADV_DNSSL->lifetime;
     cf->lifetime_mult = RADV_DNSSL->lifetime_mult;
@@ -326,8 +327,8 @@ radv_dnssl:
 
 
 radv_mult:
-   expr { $$ = $1; radv_mult_val = 0; }
- | MULT expr { $$ = 0; radv_mult_val = $2; if (($2 < 1) || ($2 > 254)) cf_error("Multiplier must be in range 1-254"); }
+   expr { $$ = $1; ctx->radv_mult_val = 0; }
+ | MULT expr { $$ = 0; ctx->radv_mult_val = $2; if (($2 < 1) || ($2 > 254)) cf_error("Multiplier must be in range 1-254"); }
  ;
 
 radv_sensitive:

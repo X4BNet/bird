@@ -10,22 +10,24 @@ CF_HDR
 
 #include "proto/ospf/ospf.h"
 
+CF_CTX
+
+struct ospf_area_config *this_area;
+struct nbma_node *this_nbma;
+list *this_nets;
+struct area_net_config *this_pref;
+struct ospf_stubnet_config *this_stubnet;
+
 CF_DEFINES
 
-#define OSPF_CFG ((struct ospf_config *) this_proto)
-#define OSPF_PATT ((struct ospf_iface_patt *) this_ipatt)
+#define OSPF_CFG ((struct ospf_config *) ctx->this_proto)
+#define OSPF_PATT ((struct ospf_iface_patt *) ctx->this_ipatt)
 
-static struct ospf_area_config *this_area;
-static struct nbma_node *this_nbma;
-static list *this_nets;
-static struct area_net_config *this_pref;
-static struct ospf_stubnet_config *this_stubnet;
-
-static inline int ospf_cfg_is_v2(void) { return OSPF_CFG->ospf2; }
-static inline int ospf_cfg_is_v3(void) { return ! OSPF_CFG->ospf2; }
+static inline int ospf_cfg_is_v2(struct cf_context *ctx) { return OSPF_CFG->ospf2; }
+static inline int ospf_cfg_is_v3(struct cf_context *ctx) { return ! OSPF_CFG->ospf2; }
 
 static void
-ospf_iface_finish(void)
+ospf_iface_finish(struct cf_context *ctx)
 {
   struct ospf_iface_patt *ip = OSPF_PATT;
 
@@ -35,9 +37,9 @@ ospf_iface_finish(void)
   if (ip->waitint == 0)
     ip->waitint = ip->deadc * ip->helloint;
 
-  ip->passwords = get_passwords();
+  ip->passwords = get_passwords(ctx);
 
-  if (ospf_cfg_is_v2() && (ip->autype == OSPF_AUTH_CRYPT) && (ip->helloint < 5))
+  if (ospf_cfg_is_v2(ctx) && (ip->autype == OSPF_AUTH_CRYPT) && (ip->helloint < 5))
     log(L_WARN "Hello or poll interval less that 5 makes cryptographic authenication prone to replay attacks");
 
   if ((ip->autype == OSPF_AUTH_NONE) && (ip->passwords != NULL))
@@ -53,42 +55,42 @@ ospf_iface_finish(void)
 
       /* Set default OSPF crypto algorithms */
       if (!pass->alg && (ip->autype == OSPF_AUTH_CRYPT))
-	pass->alg = ospf_cfg_is_v2() ? ALG_MD5 : ALG_HMAC_SHA256;
+	pass->alg = ospf_cfg_is_v2(ctx) ? ALG_MD5 : ALG_HMAC_SHA256;
 
-      if (ospf_cfg_is_v3() && ip->autype && (pass->alg < ALG_HMAC))
+      if (ospf_cfg_is_v3(ctx) && ip->autype && (pass->alg < ALG_HMAC))
 	cf_error("Keyed hash algorithms are not allowed, use HMAC algorithms");
     }
   }
 }
 
 static void
-ospf_area_finish(void)
+ospf_area_finish(struct cf_context *ctx)
 {
-  if ((this_area->areaid == 0) && (this_area->type != OPT_E))
+  if ((ctx->this_area->areaid == 0) && (ctx->this_area->type != OPT_E))
     cf_error("Backbone area cannot be stub/NSSA");
 
-  if (this_area->summary && (this_area->type == OPT_E))
+  if (ctx->this_area->summary && (ctx->this_area->type == OPT_E))
     cf_error("Only stub/NSSA areas can use summary propagation");
 
-  if (this_area->default_nssa && ((this_area->type != OPT_N) || ! this_area->summary))
+  if (ctx->this_area->default_nssa && ((ctx->this_area->type != OPT_N) || ! ctx->this_area->summary))
     cf_error("Only NSSA areas with summary propagation can use NSSA default route");
 
-  if ((this_area->default_cost & LSA_EXT3_EBIT) && ! this_area->default_nssa)
+  if ((ctx->this_area->default_cost & LSA_EXT3_EBIT) && ! ctx->this_area->default_nssa)
     cf_error("Only NSSA default route can use type 2 metric");
 }
 
 static void
-ospf_proto_finish(void)
+ospf_proto_finish(struct cf_context *ctx)
 {
   struct ospf_config *cf = OSPF_CFG;
   struct ospf_area_config *ac;
   struct ospf_iface_patt *ic;
 
   /* Define default channel */
-  if (EMPTY_LIST(this_proto->channels))
+  if (EMPTY_LIST(ctx->this_proto->channels))
   {
-    uint net_type = this_proto->net_type = ospf_cfg_is_v2() ? NET_IP4 : NET_IP6;
-    channel_config_new(NULL, net_label[net_type], net_type, this_proto);
+    uint net_type = ctx->this_proto->net_type = ospf_cfg_is_v2(ctx) ? NET_IP4 : NET_IP6;
+    channel_config_new(ctx, NULL, net_label[net_type], net_type, ctx->this_proto);
   }
 
   /* Propagate global instance ID to interfaces */
@@ -104,9 +106,9 @@ ospf_proto_finish(void)
       { ic->instance_id = cf->instance_id; ic->instance_id_set = 1; }
   }
 
-  if (ospf_cfg_is_v3())
+  if (ospf_cfg_is_v3(ctx))
   {
-    uint ipv4 = (this_proto->net_type == NET_IP4);
+    uint ipv4 = (ctx->this_proto->net_type == NET_IP4);
     uint base = (ipv4 ? 64 : 0) + (cf->af_mc ? 32 : 0);
 
     /* RFC 5838 - OSPFv3-AF */
@@ -153,7 +155,7 @@ ospf_proto_finish(void)
   cf->abr = areano > 1;
 
   /* Route export or NSSA translation (RFC 3101 3.1) */
-  cf->asbr = (proto_cf_main_channel(this_proto)->out_filter != FILTER_REJECT) || (nssa && cf->abr);
+  cf->asbr = (proto_cf_main_channel(ctx->this_proto)->out_filter != FILTER_REJECT) || (nssa && cf->abr);
 
   if (cf->abr && !backbone)
   {
@@ -169,21 +171,21 @@ ospf_proto_finish(void)
   if (!cf->abr && !EMPTY_LIST(cf->vlink_list))
     cf_error("Vlinks cannot be used on single area router");
 
-  if (cf->asbr && (areano == 1) && (this_area->type == 0))
+  if (cf->asbr && (areano == 1) && (ctx->this_area->type == 0))
     cf_error("ASBR must be in non-stub area");
 }
 
 static inline void
-ospf_check_defcost(int cost)
+ospf_check_defcost(struct cf_context *ctx, int cost)
 {
   if ((cost <= 0) || (cost >= LSINFINITY))
    cf_error("Default cost must be in range 1-%u", LSINFINITY-1);
 }
 
 static inline void
-ospf_check_auth(void)
+ospf_check_auth(struct cf_context *ctx)
 {
-  if (ospf_cfg_is_v3())
+  if (ospf_cfg_is_v3(ctx))
     cf_error("Plaintext authentication not supported in OSPFv3");
 }
 
@@ -208,7 +210,7 @@ CF_KEYWORDS(GRACEFUL, RESTART, AWARE, TIME)
 
 CF_GRAMMAR
 
-proto: ospf_proto '}' { ospf_proto_finish(); }  ;
+proto: ospf_proto '}' { ospf_proto_finish(ctx); }  ;
 
 ospf_variant:
    OSPF    { $$ = 1; }
@@ -218,8 +220,8 @@ ospf_variant:
 
 ospf_proto_start: proto_start ospf_variant
 {
-  this_proto = proto_config_new(&proto_ospf, $1);
-  this_proto->net_type = $2 ? NET_IP4 : 0;
+  ctx->this_proto = proto_config_new(ctx->new_config, &proto_ospf, $1);
+  ctx->this_proto->net_type = $2 ? NET_IP4 : 0;
 
   init_list(&OSPF_CFG->area_list);
   init_list(&OSPF_CFG->vlink_list);
@@ -245,10 +247,10 @@ ospf_af_mc:
 ospf_channel_start: net_type ospf_af_mc
 {
   /* TODO: change name for multicast channels */
-  $$ = this_channel = channel_config_get(NULL, net_label[$1], $1, this_proto);
+  $$ = ctx->this_channel = channel_config_get(ctx, NULL, net_label[$1], $1, ctx->this_proto);
 
   /* Save the multicast flag */
-  if (this_channel == proto_cf_main_channel(this_proto))
+  if (ctx->this_channel == proto_cf_main_channel(ctx->this_proto))
     OSPF_CFG->af_mc = $2;
 };
 
@@ -256,9 +258,9 @@ ospf_channel: ospf_channel_start channel_opt_list channel_end;
 
 ospf_proto_item:
    proto_item
- | ospf_channel { this_proto->net_type = $1->net_type; }
+ | ospf_channel { ctx->this_proto->net_type = $1->net_type; }
  | RFC1583COMPAT bool { OSPF_CFG->rfc1583 = $2; }
- | RFC5838 bool { OSPF_CFG->af_ext = $2; if (!ospf_cfg_is_v3()) cf_error("RFC5838 option requires OSPFv3"); }
+ | RFC5838 bool { OSPF_CFG->af_ext = $2; if (!ospf_cfg_is_v3(ctx)) cf_error("RFC5838 option requires OSPFv3"); }
  | VPN PE bool { OSPF_CFG->vpn_pe = $3; }
  | STUB ROUTER bool { OSPF_CFG->stub_router = $3; }
  | GRACEFUL RESTART bool { OSPF_CFG->gr_mode = $3; }
@@ -273,21 +275,21 @@ ospf_proto_item:
  ;
 
 ospf_area_start: AREA idval {
-  this_area = cfg_allocz(sizeof(struct ospf_area_config));
-  add_tail(&OSPF_CFG->area_list, NODE this_area);
-  this_area->areaid = $2;
-  this_area->default_cost = OSPF_DEFAULT_STUB_COST;
-  this_area->type = OPT_E;
-  this_area->transint = OSPF_DEFAULT_TRANSINT;
+  ctx->this_area = cfg_allocz(sizeof(struct ospf_area_config));
+  add_tail(&OSPF_CFG->area_list, NODE ctx->this_area);
+  ctx->this_area->areaid = $2;
+  ctx->this_area->default_cost = OSPF_DEFAULT_STUB_COST;
+  ctx->this_area->type = OPT_E;
+  ctx->this_area->transint = OSPF_DEFAULT_TRANSINT;
 
-  init_list(&this_area->patt_list);
-  init_list(&this_area->net_list);
-  init_list(&this_area->enet_list);
-  init_list(&this_area->stubnet_list);
+  init_list(&ctx->this_area->patt_list);
+  init_list(&ctx->this_area->net_list);
+  init_list(&ctx->this_area->enet_list);
+  init_list(&ctx->this_area->stubnet_list);
  }
  ;
 
-ospf_area: ospf_area_start '{' ospf_area_opts '}' { ospf_area_finish(); }
+ospf_area: ospf_area_start '{' ospf_area_opts '}' { ospf_area_finish(ctx); }
  ;
 
 ospf_area_opts:
@@ -296,17 +298,17 @@ ospf_area_opts:
  ;
 
 ospf_area_item:
-   STUB bool { this_area->type = $2 ? 0 : OPT_E; /* We should remove the option */ }
- | NSSA { this_area->type = OPT_N; }
- | SUMMARY bool { this_area->summary = $2; }
- | DEFAULT NSSA bool { this_area->default_nssa = $3; }
- | DEFAULT COST expr { this_area->default_cost = $3; ospf_check_defcost($3); }
- | DEFAULT COST2 expr { this_area->default_cost = $3 | LSA_EXT3_EBIT; ospf_check_defcost($3); }
- | STUB COST expr { this_area->default_cost = $3; ospf_check_defcost($3); }
- | TRANSLATOR bool { this_area->translator = $2; }
- | TRANSLATOR STABILITY expr { this_area->transint = $3; }
- | NETWORKS { this_nets = &this_area->net_list; } '{' pref_list '}'
- | EXTERNAL { this_nets = &this_area->enet_list; } '{' pref_list '}'
+   STUB bool { ctx->this_area->type = $2 ? 0 : OPT_E; /* We should remove the option */ }
+ | NSSA { ctx->this_area->type = OPT_N; }
+ | SUMMARY bool { ctx->this_area->summary = $2; }
+ | DEFAULT NSSA bool { ctx->this_area->default_nssa = $3; }
+ | DEFAULT COST expr { ctx->this_area->default_cost = $3; ospf_check_defcost(ctx, $3); }
+ | DEFAULT COST2 expr { ctx->this_area->default_cost = $3 | LSA_EXT3_EBIT; ospf_check_defcost(ctx, $3); }
+ | STUB COST expr { ctx->this_area->default_cost = $3; ospf_check_defcost(ctx, $3); }
+ | TRANSLATOR bool { ctx->this_area->translator = $2; }
+ | TRANSLATOR STABILITY expr { ctx->this_area->transint = $3; }
+ | NETWORKS { ctx->this_nets = &ctx->this_area->net_list; } '{' pref_list '}'
+ | EXTERNAL { ctx->this_nets = &ctx->this_area->enet_list; } '{' pref_list '}'
  | STUBNET ospf_stubnet
  | INTERFACE ospf_iface
  | ospf_vlink
@@ -319,10 +321,10 @@ ospf_stubnet:
 
 ospf_stubnet_start:
    net_ip {
-     this_stubnet = cfg_allocz(sizeof(struct ospf_stubnet_config));
-     add_tail(&this_area->stubnet_list, NODE this_stubnet);
-     this_stubnet->prefix = $1;
-     this_stubnet->cost = COST_D;
+     ctx->this_stubnet = cfg_allocz(sizeof(struct ospf_stubnet_config));
+     add_tail(&ctx->this_area->stubnet_list, NODE ctx->this_stubnet);
+     ctx->this_stubnet->prefix = $1;
+     ctx->this_stubnet->cost = COST_D;
    }
  ;
 
@@ -332,14 +334,14 @@ ospf_stubnet_opts:
  ;
 
 ospf_stubnet_item:
-   HIDDEN bool { this_stubnet->hidden = $2; }
- | SUMMARY bool { this_stubnet->summary = $2; }
- | COST expr { this_stubnet->cost = $2; }
+   HIDDEN bool { ctx->this_stubnet->hidden = $2; }
+ | SUMMARY bool { ctx->this_stubnet->summary = $2; }
+ | COST expr { ctx->this_stubnet->cost = $2; }
  ;
 
 ospf_vlink:
-   ospf_vlink_start ospf_instance_id '{' ospf_vlink_opts '}' { ospf_iface_finish(); }
- | ospf_vlink_start ospf_instance_id { ospf_iface_finish(); }
+   ospf_vlink_start ospf_instance_id '{' ospf_vlink_opts '}' { ospf_iface_finish(ctx); }
+ | ospf_vlink_start ospf_instance_id { ospf_iface_finish(ctx); }
  ;
 
 ospf_vlink_opts:
@@ -355,18 +357,18 @@ ospf_vlink_item:
  | DEAD expr { OSPF_PATT->deadint = $2 ; if ($2<=1) cf_error("Dead interval must be greater than one"); }
  | DEAD COUNT expr { OSPF_PATT->deadc = $3 ; if ($3<=1) cf_error("Dead count must be greater than one"); }
  | AUTHENTICATION NONE { OSPF_PATT->autype = OSPF_AUTH_NONE;  }
- | AUTHENTICATION SIMPLE { OSPF_PATT->autype = OSPF_AUTH_SIMPLE; ospf_check_auth(); }
+ | AUTHENTICATION SIMPLE { OSPF_PATT->autype = OSPF_AUTH_SIMPLE; ospf_check_auth(ctx); }
  | AUTHENTICATION CRYPTOGRAPHIC { OSPF_PATT->autype = OSPF_AUTH_CRYPT; }
  | password_list
  ;
 
 ospf_vlink_start: VIRTUAL LINK idval
  {
-  if (this_area->areaid == 0) cf_error("Virtual link cannot be in backbone");
-  this_ipatt = cfg_allocz(sizeof(struct ospf_iface_patt));
-  add_tail(&OSPF_CFG->vlink_list, NODE this_ipatt);
-  init_list(&this_ipatt->ipn_list);
-  OSPF_PATT->voa = this_area->areaid;
+  if (ctx->this_area->areaid == 0) cf_error("Virtual link cannot be in backbone");
+  ctx->this_ipatt = cfg_allocz(sizeof(struct ospf_iface_patt));
+  add_tail(&OSPF_CFG->vlink_list, NODE ctx->this_ipatt);
+  init_list(&ctx->this_ipatt->ipn_list);
+  OSPF_PATT->voa = ctx->this_area->areaid;
   OSPF_PATT->vid = $3;
   OSPF_PATT->helloint = HELLOINT_D;
   OSPF_PATT->rxmtint = RXMTINT_D;
@@ -374,7 +376,7 @@ ospf_vlink_start: VIRTUAL LINK idval
   OSPF_PATT->deadc = DEADC_D;
   OSPF_PATT->type = OSPF_IT_VLINK;
   init_list(&OSPF_PATT->nbma_list);
-  reset_passwords();
+  reset_passwords(ctx);
  }
 ;
 
@@ -394,19 +396,19 @@ ospf_iface_item:
  | TYPE PTP { OSPF_PATT->type = OSPF_IT_PTP ; }
  | TYPE POINTOMULTIPOINT { OSPF_PATT->type = OSPF_IT_PTMP ; }
  | TYPE PTMP { OSPF_PATT->type = OSPF_IT_PTMP ; }
- | REAL BROADCAST bool { OSPF_PATT->real_bcast = $3; if (!ospf_cfg_is_v2()) cf_error("Real broadcast option requires OSPFv2"); }
- | PTP NETMASK bool { OSPF_PATT->ptp_netmask = $3; if (!ospf_cfg_is_v2()) cf_error("PtP netmask option requires OSPFv2"); }
- | PTP ADDRESS bool { OSPF_PATT->ptp_address = $3; if (!ospf_cfg_is_v2()) cf_error("PtP address option requires OSPFv2"); }
+ | REAL BROADCAST bool { OSPF_PATT->real_bcast = $3; if (!ospf_cfg_is_v2(ctx)) cf_error("Real broadcast option requires OSPFv2"); }
+ | PTP NETMASK bool { OSPF_PATT->ptp_netmask = $3; if (!ospf_cfg_is_v2(ctx)) cf_error("PtP netmask option requires OSPFv2"); }
+ | PTP ADDRESS bool { OSPF_PATT->ptp_address = $3; if (!ospf_cfg_is_v2(ctx)) cf_error("PtP address option requires OSPFv2"); }
  | TRANSMIT DELAY expr { OSPF_PATT->inftransdelay = $3 ; if (($3<=0) || ($3>65535)) cf_error("Transmit delay must be in range 1-65535"); }
  | PRIORITY expr { OSPF_PATT->priority = $2 ; if ($2>255) cf_error("Priority must be in range 0-255"); }
  | STRICT NONBROADCAST bool { OSPF_PATT->strictnbma = $3 ; }
  | STUB bool { OSPF_PATT->stub = $2 ; }
  | CHECK LINK bool { OSPF_PATT->check_link = $3; }
  | ECMP WEIGHT expr { OSPF_PATT->ecmp_weight = $3 - 1; if (($3<1) || ($3>256)) cf_error("ECMP weight must be in range 1-256"); }
- | LINK LSA SUPPRESSION bool { OSPF_PATT->link_lsa_suppression = $4; if (!ospf_cfg_is_v3()) cf_error("Link LSA suppression option requires OSPFv3"); }
+ | LINK LSA SUPPRESSION bool { OSPF_PATT->link_lsa_suppression = $4; if (!ospf_cfg_is_v3(ctx)) cf_error("Link LSA suppression option requires OSPFv3"); }
  | NEIGHBORS '{' nbma_list '}'
  | AUTHENTICATION NONE { OSPF_PATT->autype = OSPF_AUTH_NONE; }
- | AUTHENTICATION SIMPLE { OSPF_PATT->autype = OSPF_AUTH_SIMPLE; ospf_check_auth(); }
+ | AUTHENTICATION SIMPLE { OSPF_PATT->autype = OSPF_AUTH_SIMPLE; ospf_check_auth(ctx); }
  | AUTHENTICATION CRYPTOGRAPHIC { OSPF_PATT->autype = OSPF_AUTH_CRYPT; }
  | RX BUFFER NORMAL { OSPF_PATT->rx_buffer = 0; }
  | RX BUFFER LARGE { OSPF_PATT->rx_buffer = OSPF_MAX_PKT_SIZE; }
@@ -416,7 +418,7 @@ ospf_iface_item:
  | TX LENGTH expr { OSPF_PATT->tx_length = $3; if (($3 < OSPF_MIN_PKT_SIZE) || ($3 > OSPF_MAX_PKT_SIZE)) cf_error("TX length must be in range 256-65535"); }
  | TTL SECURITY bool { OSPF_PATT->ttl_security = $3; }
  | TTL SECURITY TX ONLY { OSPF_PATT->ttl_security = 2; }
- | BFD bool { OSPF_PATT->bfd = $2; cf_check_bfd($2); }
+ | BFD bool { OSPF_PATT->bfd = $2; BFD_CHECK($2); }
  | password_list
  ;
 
@@ -429,16 +431,16 @@ pref_item: pref_base pref_opt ';' ;
 
 pref_base: net_ip
  {
-   this_pref = cfg_allocz(sizeof(struct area_net_config));
-   add_tail(this_nets, NODE this_pref);
-   this_pref->prefix = $1;
+   ctx->this_pref = cfg_allocz(sizeof(struct area_net_config));
+   add_tail(ctx->this_nets, NODE ctx->this_pref);
+   ctx->this_pref->prefix = $1;
  }
 ;
 
 pref_opt:
  /* empty */
- | HIDDEN { this_pref->hidden = 1; }
- | TAG expr { this_pref->tag = $2; }
+ | HIDDEN { ctx->this_pref->hidden = 1; }
+ | TAG expr { ctx->this_pref->tag = $2; }
  ;
 
 nbma_list:
@@ -453,18 +455,18 @@ nbma_eligible:
 
 nbma_item: ipa nbma_eligible ';'
  {
-   this_nbma = cfg_allocz(sizeof(struct nbma_node));
-   add_tail(&OSPF_PATT->nbma_list, NODE this_nbma);
-   this_nbma->ip=$1;
-   this_nbma->eligible=$2;
+   ctx->this_nbma = cfg_allocz(sizeof(struct nbma_node));
+   add_tail(&OSPF_PATT->nbma_list, NODE ctx->this_nbma);
+   ctx->this_nbma->ip=$1;
+   ctx->this_nbma->eligible=$2;
  }
 ;
 
 ospf_iface_start:
  {
-  this_ipatt = cfg_allocz(sizeof(struct ospf_iface_patt));
-  add_tail(&this_area->patt_list, NODE this_ipatt);
-  init_list(&this_ipatt->ipn_list);
+  ctx->this_ipatt = cfg_allocz(sizeof(struct ospf_iface_patt));
+  add_tail(&ctx->this_area->patt_list, NODE ctx->this_ipatt);
+  init_list(&ctx->this_ipatt->ipn_list);
   OSPF_PATT->cost = COST_D;
   OSPF_PATT->helloint = HELLOINT_D;
   OSPF_PATT->pollint = POLLINT_D;
@@ -479,7 +481,7 @@ ospf_iface_start:
   OSPF_PATT->ptp_address = 2; /* not specified */
   OSPF_PATT->tx_tos = IP_PREC_INTERNET_CONTROL;
   OSPF_PATT->tx_priority = sk_priority_control;
-  reset_passwords();
+  reset_passwords(ctx);
  }
 ;
 
@@ -489,7 +491,7 @@ ospf_instance_id:
  ;
 
 ospf_iface_patt_list:
-   iface_patt_list { if (ospf_cfg_is_v3()) iface_patt_check(); } ospf_instance_id
+   iface_patt_list { if (ospf_cfg_is_v3(ctx)) iface_patt_check(ctx); } ospf_instance_id
  ;
 
 ospf_iface_opts:
@@ -503,7 +505,7 @@ ospf_iface_opt_list:
  ;
 
 ospf_iface:
-  ospf_iface_start ospf_iface_patt_list ospf_iface_opt_list { ospf_iface_finish(); }
+  ospf_iface_start ospf_iface_patt_list ospf_iface_opt_list { ospf_iface_finish(ctx); }
  ;
 
 dynamic_attr: OSPF_METRIC1 { $$ = f_new_dynamic_attr(EAF_TYPE_INT, T_INT, EA_OSPF_METRIC1); } ;
@@ -524,24 +526,24 @@ CF_CLI(SHOW OSPF INTERFACE, optproto opttext, [<name>] [\"<interface>\"], [[Show
 CF_CLI_HELP(SHOW OSPF TOPOLOGY, [all] [<name>], [[Show information about OSPF network topology]])
 
 CF_CLI(SHOW OSPF TOPOLOGY, optproto opttext, [<name>], [[Show information about reachable OSPF network topology]])
-{ ospf_sh_state(proto_get_named($4, &proto_ospf), 0, 1); };
+{ ospf_sh_state(proto_get_named(ctx, $4, &proto_ospf), 0, 1); };
 
 CF_CLI(SHOW OSPF TOPOLOGY ALL, optproto opttext, [<name>], [[Show information about all OSPF network topology]])
-{ ospf_sh_state(proto_get_named($5, &proto_ospf), 0, 0); };
+{ ospf_sh_state(proto_get_named(ctx, $5, &proto_ospf), 0, 0); };
 
 CF_CLI_HELP(SHOW OSPF STATE, [all] [<name>], [[Show information about OSPF network state]])
 
 CF_CLI(SHOW OSPF STATE, optproto opttext, [<name>], [[Show information about reachable OSPF network state]])
-{ ospf_sh_state(proto_get_named($4, &proto_ospf), 1, 1); };
+{ ospf_sh_state(proto_get_named(ctx, $4, &proto_ospf), 1, 1); };
 
 CF_CLI(SHOW OSPF STATE ALL, optproto opttext, [<name>], [[Show information about all OSPF network state]])
-{ ospf_sh_state(proto_get_named($5, &proto_ospf), 1, 0); };
+{ ospf_sh_state(proto_get_named(ctx, $5, &proto_ospf), 1, 0); };
 
 CF_CLI_HELP(SHOW OSPF LSADB, ..., [[Show content of OSPF LSA database]]);
 CF_CLI(SHOW OSPF LSADB, lsadb_args, [global | area <id> | link] [type <num>] [lsid <id>] [self | router <id>] [<proto>], [[Show content of OSPF LSA database]])
 {
   if (!$4->proto)
-    $4->proto = (struct ospf_proto *) proto_get_named(NULL, &proto_ospf);
+    $4->proto = (struct ospf_proto *) proto_get_named(ctx, NULL, &proto_ospf);
 
   ospf_sh_lsadb($4);
 };
@@ -549,6 +551,7 @@ CF_CLI(SHOW OSPF LSADB, lsadb_args, [global | area <id> | link] [type <num>] [ls
 lsadb_args:
    /* empty */ {
      $$ = cfg_allocz(sizeof(struct lsadb_show_data));
+     $$->ctx = ctx;
    }
  | lsadb_args GLOBAL { $$ = $1; $$->scope = LSA_SCOPE_AS; }
  | lsadb_args AREA idval { $$ = $1; $$->scope = LSA_SCOPE_AREA; $$->area = $3; }
@@ -557,7 +560,7 @@ lsadb_args:
  | lsadb_args LSID idval { $$ = $1; $$->lsid = $3; }
  | lsadb_args SELF { $$ = $1; $$->router = SH_ROUTER_SELF; }
  | lsadb_args ROUTER idval { $$ = $1; $$->router = $3; }
- | lsadb_args CF_SYM_KNOWN { cf_assert_symbol($2, SYM_PROTO); $$ = $1; $$->proto = (struct ospf_proto *) proto_get_named($2, &proto_ospf); }
+ | lsadb_args CF_SYM_KNOWN { cf_assert_symbol(ctx, $2, SYM_PROTO); $$ = $1; $$->proto = (struct ospf_proto *) proto_get_named(ctx, $2, &proto_ospf); }
  ;
 
 CF_CODE

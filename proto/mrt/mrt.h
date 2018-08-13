@@ -146,10 +146,10 @@ struct mrt_bgp_data {
 
 
 #ifdef CONFIG_MRT
-void mrt_dump_cmd(struct mrt_dump_data *d);
+void mrt_dump_cmd(struct cf_context *ctx, struct mrt_dump_data *d);
 void mrt_dump_bgp_message(struct mrt_bgp_data *d);
 void mrt_dump_bgp_state_change(struct mrt_bgp_data *d);
-void mrt_check_config(struct proto_config *C);
+void mrt_check_config(struct cf_context *ctx, struct proto_config *C);
 #else
 static inline void mrt_dump_bgp_message(struct mrt_bgp_data *d UNUSED) { }
 static inline void mrt_dump_bgp_state_change(struct mrt_bgp_data *d UNUSED) { }

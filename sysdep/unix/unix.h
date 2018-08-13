@@ -113,6 +113,11 @@ void *rf_file(struct rfile *f);
 int rf_fileno(struct rfile *f);
 void test_old_bird(char *path);
 
+/* conf.c */
+
+extern char *config_name;
+struct config *read_config(void);
+
 /* krt.c bits */
 
 void krt_io_init(void);

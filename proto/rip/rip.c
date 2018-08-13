@@ -1097,13 +1097,13 @@ rip_rte_better(struct rte_storage *new, struct rte_storage *old)
 }
 
 static void
-rip_postconfig(struct proto_config *CF)
+rip_postconfig(struct cf_context *ctx, struct proto_config *CF)
 {
   // struct rip_config *cf = (void *) CF;
 
   /* Define default channel */
   if (EMPTY_LIST(CF->channels))
-    channel_config_new(NULL, net_label[CF->net_type], CF->net_type, CF);
+    channel_config_new(ctx, NULL, net_label[CF->net_type], CF->net_type, CF);
 }
 
 static struct proto *

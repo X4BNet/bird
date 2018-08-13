@@ -53,7 +53,7 @@ struct rte;
 
 enum filter_return f_run(const struct filter *filter, struct rte *rte, struct linpool *tmp_pool, int flags);
 enum filter_return f_eval_rte(const struct f_line *expr, struct rte *rte, struct linpool *tmp_pool);
-uint f_eval_int(const struct f_line *expr);
+uint f_eval_int(struct cf_context *ctx, const struct f_line *expr);
 enum filter_return f_eval_buf(const struct f_line *expr, struct linpool *tmp_pool, buffer *buf);
 
 const char *filter_name(const struct filter *filter);
@@ -77,6 +77,6 @@ struct custom_attribute {
   const char *name;
 };
 
-struct custom_attribute *ca_lookup(pool *p, const char *name, int ea_type);
+struct custom_attribute *ca_lookup(struct cf_context *ctx, pool *p, const char *name, int ea_type);
 
 #endif

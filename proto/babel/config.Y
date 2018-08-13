@@ -17,8 +17,8 @@ CF_HDR
 
 CF_DEFINES
 
-#define BABEL_CFG ((struct babel_config *) this_proto)
-#define BABEL_IFACE ((struct babel_iface_config *) this_ipatt)
+#define BABEL_CFG ((struct babel_config *) ctx->this_proto)
+#define BABEL_IFACE ((struct babel_iface_config *) ctx->this_ipatt)
 
 CF_DECLS
 
@@ -33,7 +33,7 @@ proto: babel_proto ;
 
 babel_proto_start: proto_start BABEL
 {
-  this_proto = proto_config_new(&proto_babel, $1);
+  ctx->this_proto = proto_config_new(ctx->new_config, &proto_babel, $1);
   init_list(&BABEL_CFG->iface_list);
   BABEL_CFG->hold_time = 1 S_;
 };
@@ -56,9 +56,9 @@ babel_proto:
 
 babel_iface_start:
 {
-  this_ipatt = cfg_allocz(sizeof(struct babel_iface_config));
-  add_tail(&BABEL_CFG->iface_list, NODE this_ipatt);
-  init_list(&this_ipatt->ipn_list);
+  ctx->this_ipatt = cfg_allocz(sizeof(struct babel_iface_config));
+  add_tail(&BABEL_CFG->iface_list, NODE ctx->this_ipatt);
+  init_list(&ctx->this_ipatt->ipn_list);
   BABEL_IFACE->port = BABEL_PORT;
   BABEL_IFACE->type = BABEL_IFACE_TYPE_WIRED;
   BABEL_IFACE->limit = BABEL_HELLO_LIMIT;

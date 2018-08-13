@@ -19,6 +19,8 @@
 
 #define MAX_NUM 4
 
+extern struct config *config_alloc(struct pool *pp, struct linpool *lp);
+
 int event_check_points[MAX_NUM];
 
 #define event_hook_body(num)			\
@@ -61,7 +63,7 @@ t_ev_run_list(void)
   if_init();
 //  roa_init();
   config_init();
-  config = config_alloc("");
+  config = config_alloc(NULL, NULL);
 
   init_event_check_points();
 

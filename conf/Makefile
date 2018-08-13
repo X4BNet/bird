@@ -1,4 +1,4 @@
-src := cf-parse.tab.c cf-lex.c conf.c
+src := cf-parse.tab.c cf-lex.c conf.c symbols.c
 obj := $(src-o-files)
 
 $(all-daemon)
@@ -13,21 +13,22 @@ endif
 $(o)cf-parse.y: $(s)gen_parser.m4
 $(o)keywords.h: $(s)gen_keywords.m4
 $(o)commands.h: $(s)gen_commands.m4
+$(o)context.h: $(s)gen_context.m4
 
 $(conf-y-targets): $(s)confbase.Y $(s)flowspec.Y
 	$(M4) $(M4FLAGS) -P $(if $(word 2,$(filter %.m4,$^)),$(error "Too many M4 scripts for one target"),$(filter %.m4,$^)) $(filter %.Y,$^) >$@
 
 $(o)cf-parse.tab.h: $(o)cf-parse.tab.c
 
-$(o)cf-parse.tab.c: $(o)cf-parse.y
-	$(BISON) $(BISON_DEBUG) $(BISONFLAGS) -dv -pcf_ -b $(@:.tab.c=) $<
+$(o)cf-parse.tab.c: $(o)cf-parse.y $(o)context.h
+	$(BISON) $(BISON_DEBUG) $(BISONFLAGS) -dv -pcfx_ -b $(@:.tab.c=) $<
 
 $(o)cf-lex.c: $(s)cf-lex.l
-	$(FLEX) $(FLEX_DEBUG) -f -s -B -8 -Pcf_ -o$@ $<
+	$(FLEX) $(FLEX_DEBUG) -f -s -B -8 -Pcfx_ -o$@ $<
 
 $(o)cf-lex.o: CFLAGS+=-Wno-sign-compare -Wno-unused-function
 
-prepare: $(o)keywords.h $(o)commands.h $(o)cf-parse.tab.h
+prepare: $(o)keywords.h $(o)commands.h $(o)cf-parse.tab.h $(o)context.h
 
 $(addprefix $(o), cf-parse.y keywords.h commands.h cf-parse.tab.h cf-parse.tab.c cf-lex.c): $(objdir)/.dir-stamp
 

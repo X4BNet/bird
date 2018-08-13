@@ -17,6 +17,7 @@
 #include "lib/string.h"
 #include "lib/coro.h"
 #include "conf/conf.h"
+#include "conf/parser.h"
 #include "nest/rtable.h"
 #include "nest/iface.h"
 #include "nest/cli.h"
@@ -958,7 +959,7 @@ const struct channel_class channel_basic = {
 };
 
 void *
-channel_config_new(const struct channel_class *cc, const char *name, uint net_type, struct proto_config *proto)
+channel_config_new(struct cf_context *ctx, const struct channel_class *cc, const char *name, uint net_type, struct proto_config *proto)
 {
   struct channel_config *cf = NULL;
   struct rtable_config *tab = NULL;
@@ -971,7 +972,7 @@ channel_config_new(const struct channel_class *cc, const char *name, uint net_ty
     if (proto->net_type && (net_type != proto->net_type))
       cf_error("Different channel type");
 
-    tab = new_config->def_tables[net_type];
+    tab = ctx->new_config->def_tables[net_type];
   }
 
   if (!cc)
@@ -987,7 +988,7 @@ channel_config_new(const struct channel_class *cc, const char *name, uint net_ty
   cf->net_type = net_type;
   cf->ra_mode = RA_OPTIMAL;
   cf->preference = proto->protocol->preference;
-  cf->debug = new_config->channel_default_debug;
+  cf->debug = ctx->new_config->channel_default_debug;
   cf->rpki_reload = 1;
 
   add_tail(&proto->channels, &cf->n);
@@ -996,7 +997,7 @@ channel_config_new(const struct channel_class *cc, const char *name, uint net_ty
 }
 
 void *
-channel_config_get(const struct channel_class *cc, const char *name, uint net_type, struct proto_config *proto)
+channel_config_get(struct cf_context *ctx, const struct channel_class *cc, const char *name, uint net_type, struct proto_config *proto)
 {
   struct channel_config *cf;
 
@@ -1012,18 +1013,18 @@ channel_config_get(const struct channel_class *cc, const char *name, uint net_ty
       return cf;
     }
 
-  return channel_config_new(cc, name, net_type, proto);
+  return channel_config_new(ctx, cc, name, net_type, proto);
 }
 
 struct channel_config *
-channel_copy_config(struct channel_config *src, struct proto_config *proto)
+channel_copy_config(struct config *cf, struct channel_config *src, struct proto_config *proto)
 {
-  struct channel_config *dst = cfg_alloc(src->channel->config_size);
+  struct channel_config *dst = lp_alloc(cf->mem, src->channel->config_size);
 
   memcpy(dst, src, src->channel->config_size);
   memset(&dst->n, 0, sizeof(node));
   add_tail(&proto->channels, &dst->n);
-  CALL(src->channel->copy_config, dst, src);
+  CALL(src->channel->copy_config, cf, dst, src);
 
   return dst;
 }
@@ -1340,23 +1341,50 @@ proto_start(struct proto *p)
  * initialized during protos_commit()).
  */
 void *
-proto_config_new(struct protocol *pr, int class)
+proto_config_new(struct config *new, struct protocol *pr, int class)
 {
-  struct proto_config *cf = cfg_allocz(pr->config_size);
+  struct proto_config *cf = lp_allocz(new->mem, pr->config_size);
 
   if (class == SYM_PROTO)
-    add_tail(&new_config->protos, &cf->n);
+    add_tail(&new->protos, &cf->n);
 
-  cf->global = new_config;
+  cf->global = new;
   cf->protocol = pr;
   cf->name = pr->name;
   cf->class = class;
-  cf->debug = new_config->proto_default_debug;
-  cf->mrtdump = new_config->proto_default_mrtdump;
+  cf->debug = new->proto_default_debug;
+  cf->mrtdump = new->proto_default_mrtdump;
 
   init_list(&cf->channels);
 
   return cf;
+}
+
+static void
+do_proto_copy_config(struct config *new, struct proto_config *dest, struct proto_config *src)
+{
+  /*
+   * Copy struct proto_config here. Keep original node, class and name.
+   * protocol-specific config copy is handled by protocol copy_config() hook
+   */
+
+  node old_node = dest->n;
+  int old_class = dest->class;
+  const char *old_name = dest->name;
+
+  memcpy(dest, src, src->protocol->config_size);
+
+  dest->n = old_node;
+  dest->class = old_class;
+  dest->name = old_name;
+  init_list(&dest->channels);
+
+  struct channel_config *cc;
+  WALK_LIST(cc, src->channels)
+    channel_copy_config(new, cc, dest);
+
+  /* FIXME: allow for undefined copy_config */
+  dest->protocol->copy_config(new, dest, src);
 }
 
 
@@ -1372,13 +1400,8 @@ proto_config_new(struct protocol *pr, int class)
  * copy_config() protocol hook is used to copy protocol-specific data.
  */
 void
-proto_copy_config(struct proto_config *dest, struct proto_config *src)
+proto_copy_config(struct cf_context *ctx, struct proto_config *dest, struct proto_config *src)
 {
-  struct channel_config *cc;
-  node old_node;
-  int old_class;
-  const char *old_name;
-
   if (dest->protocol != src->protocol)
     cf_error("Can't copy configuration from a different protocol type");
 
@@ -1387,34 +1410,19 @@ proto_copy_config(struct proto_config *dest, struct proto_config *src)
 
   DBG("Copying configuration from %s to %s\n", src->name, dest->name);
 
-  /*
-   * Copy struct proto_config here. Keep original node, class and name.
-   * protocol-specific config copy is handled by protocol copy_config() hook
-   */
-
-  old_node = dest->n;
-  old_class = dest->class;
-  old_name = dest->name;
-
-  memcpy(dest, src, src->protocol->config_size);
-
-  dest->n = old_node;
-  dest->class = old_class;
-  dest->name = old_name;
-  init_list(&dest->channels);
-
-  WALK_LIST(cc, src->channels)
-    channel_copy_config(cc, dest);
-
-  /* FIXME: allow for undefined copy_config */
-  dest->protocol->copy_config(dest, src);
+  return do_proto_copy_config(ctx->new_config, dest, src);
 }
 
 void
-proto_clone_config(struct symbol *sym, struct proto_config *parent)
+proto_clone_config(struct config *new, struct symbol *sym, struct proto_config *parent)
 {
-  struct proto_config *cf = proto_config_new(parent->protocol, SYM_PROTO);
-  proto_copy_config(cf, parent);
+  struct proto_config *cf = proto_config_new(new, parent->protocol, SYM_PROTO);
+
+  ASSERT(cf->protocol == parent->protocol);
+  ASSERT(cf->protocol->copy_config);
+
+  do_proto_copy_config(new, cf, parent);
+
   cf->name = sym->name;
   cf->proto = NULL;
   cf->parent = parent;
@@ -1450,7 +1458,6 @@ protos_preconfig(struct config *c)
   WALK_LIST(p, protocol_list)
   {
     DBG(" %s", p->name);
-    p->name_counter = 0;
     if (p->preconfig)
       p->preconfig(p, c);
   }
@@ -1540,13 +1547,8 @@ protos_commit(struct config *new, struct config *old, int force_reconfig, int ty
 	if (parsym && parsym->class == SYM_PROTO)
 	{
 	  /* This is hack, we would like to share config, but we need to copy it now */
-	  new_config = new;
-	  cfg_mem = new->mem;
-	  conf_this_scope = new->root_scope;
-	  sym = cf_get_symbol(oc->name);
-	  proto_clone_config(sym, parsym->proto);
-	  new_config = NULL;
-	  cfg_mem = NULL;
+	  sym = cf_alloc_symbol(new, new->root_scope, oc->name, strlen(oc->name));
+	  proto_clone_config(new, sym, parsym->proto);
 	}
       }
 
@@ -2595,7 +2597,7 @@ proto_apply_cmd(struct proto_spec ps, void (* cmd)(struct proto *, uintptr_t, in
 }
 
 struct proto *
-proto_get_named(struct symbol *sym, struct protocol *pr)
+proto_get_named(struct cf_context *ctx, struct symbol *sym, struct protocol *pr)
 {
   struct proto *p, *q;
 
@@ -2626,7 +2628,7 @@ proto_get_named(struct symbol *sym, struct protocol *pr)
 }
 
 struct proto *
-proto_iterate_named(struct symbol *sym, struct protocol *proto, struct proto *old)
+proto_iterate_named(struct cf_context *ctx, struct symbol *sym, struct protocol *proto, struct proto *old)
 {
   if (sym)
   {

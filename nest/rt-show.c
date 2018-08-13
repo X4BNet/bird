@@ -14,6 +14,7 @@
 #include "nest/protocol.h"
 #include "nest/cli.h"
 #include "nest/iface.h"
+#include "conf/parser.h"
 #include "filter/filter.h"
 #include "sysdep/unix/krt.h"
 
@@ -301,6 +302,7 @@ done:
 struct rt_show_data_rtable *
 rt_show_add_table(struct rt_show_data *d, rtable *t)
 {
+  struct cf_context *ctx = d->ctx;
   struct rt_show_data_rtable *tab = cfg_allocz(sizeof(struct rt_show_data_rtable));
   tab->table = t;
   add_tail(&(d->tables), &(tab->n));
@@ -349,6 +351,8 @@ rt_show_get_default_tables(struct rt_show_data *d)
 static inline void
 rt_show_prepare_tables(struct rt_show_data *d)
 {
+  struct cf_context *ctx = d->ctx;
+
   struct rt_show_data_rtable *tab, *tabx;
 
   /* Add implicit tables if no table is specified */
@@ -402,6 +406,7 @@ rt_show_prepare_tables(struct rt_show_data *d)
 void
 rt_show(struct rt_show_data *d)
 {
+  struct cf_context *ctx = d->ctx;
   struct rt_show_data_rtable *tab;
   net *n;
 

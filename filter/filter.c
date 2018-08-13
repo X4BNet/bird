@@ -40,6 +40,7 @@
 #include "nest/iface.h"
 #include "nest/attrs.h"
 #include "conf/conf.h"
+#include "conf/parser.h"
 #include "filter/filter.h"
 #include "filter/f-inst.h"
 #include "filter/data.h"
@@ -320,15 +321,17 @@ f_eval(const struct f_line *expr, struct linpool *tmp_pool, struct f_val *pres)
  * for allocations. Do not call in other cases.
  */
 uint
-f_eval_int(const struct f_line *expr)
+f_eval_int(struct cf_context *ctx, const struct f_line *expr)
 {
   /* Called independently in parse-time to eval expressions */
-  filter_state = (struct filter_state) {
-    .stack = &filter_stack,
-    .pool = cfg_mem,
-  };
+  struct lp_state lps;
+  lp_save(ctx->cfg_mem, &lps);
 
   struct f_val val;
+  filter_state = (struct filter_state) {
+    .stack = &filter_stack,
+    .pool = ctx->cfg_mem,
+  };
 
   LOG_BUFFER_INIT(filter_state.buf);
 
@@ -337,6 +340,8 @@ f_eval_int(const struct f_line *expr)
 
   if (val.type != T_INT)
     cf_error("Integer expression expected");
+
+  lp_restore(ctx->cfg_mem, &lps);
 
   return val.val.i;
 }

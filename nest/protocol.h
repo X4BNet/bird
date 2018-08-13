@@ -59,7 +59,6 @@ struct protocol {
   node n;
   char *name;
   char *template;			/* Template for automatic generation of names */
-  int name_counter;			/* Counter for automatic name generation */
   enum protocol_class class;		/* Machine readable protocol class */
   uint preference;			/* Default protocol preference */
   uint channel_mask;			/* Mask of accepted channel types (NB_*) */
@@ -67,7 +66,7 @@ struct protocol {
   uint config_size;			/* Size of protocol config data structure */
 
   void (*preconfig)(struct protocol *, struct config *);	/* Just before configuring */
-  void (*postconfig)(struct proto_config *);			/* After configuring each instance */
+  void (*postconfig)(struct cf_context *ctx, struct proto_config *);			/* After configuring each instance */
   struct proto * (*init)(struct proto_config *);		/* Create new instance */
   int (*reconfigure)(struct proto *, struct proto_config *);	/* Try to reconfigure instance, returns success */
   void (*dump)(struct proto *);			/* Debugging dump */
@@ -78,7 +77,7 @@ struct protocol {
   void (*get_route_info)(struct rte *, struct rte_storage *, byte *); /* Get route information (for `show route' command) */
   int (*get_attr)(const struct eattr *, byte *buf, int buflen);	/* ASCIIfy dynamic attribute (returns GA_*) */
   void (*show_proto_info)(struct proto *);	/* Show protocol info (for `show protocols all' command) */
-  void (*copy_config)(struct proto_config *, struct proto_config *);	/* Copy config from given protocol instance */
+  void (*copy_config)(struct config *, struct proto_config *, struct proto_config *);	/* Copy config from given protocol instance */
 };
 
 void protos_build(void);
@@ -235,9 +234,9 @@ struct proto_spec {
 
 
 void *proto_new(struct proto_config *);
-void *proto_config_new(struct protocol *, int class);
-void proto_copy_config(struct proto_config *dest, struct proto_config *src);
-void proto_clone_config(struct symbol *sym, struct proto_config *parent);
+void *proto_config_new(struct config *, struct protocol *, int class);
+void proto_copy_config(struct cf_context *, struct proto_config *dest, struct proto_config *src);
+void proto_clone_config(struct config *, struct symbol *sym, struct proto_config *parent);
 void proto_set_message(struct proto *p, char *msg, int len);
 
 void graceful_restart_recovery(void);
@@ -261,10 +260,10 @@ void proto_cmd_debug(struct proto *, uintptr_t, int);
 void proto_cmd_mrtdump(struct proto *, uintptr_t, int);
 
 void proto_apply_cmd(struct proto_spec ps, void (* cmd)(struct proto *, uintptr_t, int), int restricted, uintptr_t arg);
-struct proto *proto_get_named(struct symbol *, struct protocol *);
-struct proto *proto_iterate_named(struct symbol *sym, struct protocol *proto, struct proto *old);
+struct proto *proto_get_named(struct cf_context *ctx, struct symbol *, struct protocol *);
+struct proto *proto_iterate_named(struct cf_context *ctx, struct symbol *sym, struct protocol *proto, struct proto *old);
 
-#define PROTO_WALK_CMD(sym,pr,p) for(struct proto *p = NULL; p = proto_iterate_named(sym, pr, p); )
+#define PROTO_WALK_CMD(sym,pr,p) for(struct proto *p = NULL; p = proto_iterate_named(ctx, sym, pr, p); )
 
 
 #define CMD_RELOAD	0
@@ -402,7 +401,7 @@ struct channel_class {
   void (*shutdown)(struct channel *);	/* Stop the instance */
   void (*cleanup)(struct channel *);	/* Channel finished flush */
 
-  void (*copy_config)(struct channel_config *, struct channel_config *); /* Copy config from given channel instance */
+  void (*copy_config)(struct config *, struct channel_config *, struct channel_config *); /* Copy config from given channel instance */
 #if 0
   XXXX;
   void (*preconfig)(struct protocol *, struct config *);	/* Just before configuring */
@@ -557,8 +556,8 @@ static inline void channel_open(struct channel *c) { channel_set_state(c, XCS_UP
 static inline void channel_close(struct channel *c) { channel_set_state(c, XCS_STOP); }
 
 void channel_request_feeding(struct channel *c);
-void *channel_config_new(const struct channel_class *cc, const char *name, uint net_type, struct proto_config *proto);
-void *channel_config_get(const struct channel_class *cc, const char *name, uint net_type, struct proto_config *proto);
+void *channel_config_new(struct cf_context *ctx, const struct channel_class *cc, const char *name, uint net_type, struct proto_config *proto);
+void *channel_config_get(struct cf_context *ctx, const struct channel_class *cc, const char *name, uint net_type, struct proto_config *proto);
 int channel_reconfigure(struct channel *c, struct channel_config *cf);
 
 /* For rt-table.c */

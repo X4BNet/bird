@@ -15,6 +15,7 @@
 #include <sys/types.h>
 
 #include "nest/bird.h"
+#include "lib/string.h"
 
 
 extern int bt_result;
@@ -69,6 +70,13 @@ static inline int bt_test_fn_noarg(const void *cp) { return ((int (*)(void)) cp)
 #define bt_test_suite_arg_extra(fn, arg, f, t, dsc, ...) \
   bt_test_suite_base(fn, #fn, arg, f, t, dsc, ##__VA_ARGS__)
 
+#define bt_printf(format, ...) \
+  do { \
+    char buf[1024]; \
+    if (bsprintf(buf, format, ##__VA_ARGS__) >= 0) \
+      fputs(buf, stdout); \
+  } while (0)
+
 #define bt_abort() \
   bt_abort_msg("Aborted at %s:%d", __FILE__, __LINE__)
 
@@ -83,16 +91,23 @@ static inline int bt_test_fn_noarg(const void *cp) { return ((int (*)(void)) cp)
   do 									\
   {	 								\
     if (bt_test_id) 							\
-      printf("%s: %s: " format "\n", bt_filename, bt_test_id, ##__VA_ARGS__); \
+      bt_printf("%s: %s: " format "\n", bt_filename, bt_test_id, ##__VA_ARGS__); \
     else 								\
-      printf("%s: " format "\n", bt_filename, ##__VA_ARGS__);		\
+      bt_printf("%s: " format "\n", bt_filename, ##__VA_ARGS__);		\
   } while(0)
+
+#define bt_info(format, ...)                                           \
+  do                                                                   \
+  {                                                                    \
+    if (bt_verbose >= BT_VERBOSE_SUITE_CASE)                           \
+      bt_printf(format, ##__VA_ARGS__);                                   \
+  } while (0)
 
 #define bt_debug(format, ...) 						\
   do 									\
   { 									\
     if (bt_verbose >= BT_VERBOSE_ABSOLUTELY_ALL)			\
-      printf(format, ##__VA_ARGS__); 					\
+      bt_printf(format, ##__VA_ARGS__); 					\
   } while (0)
 
 #define bt_assert(test) \

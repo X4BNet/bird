@@ -879,55 +879,16 @@ rpki_show_proto_info(struct proto *P)
  * 	RPKI Protocol Configuration
  */
 
-/**
- * rpki_check_config - check and complete configuration of RPKI protocol
- * @cf: RPKI configuration
- *
- * This function is called at the end of parsing RPKI protocol configuration.
- */
-void
-rpki_check_config(struct rpki_config *cf)
-{
-  /* Do not check templates at all */
-  if (cf->c.class == SYM_TEMPLATE)
-    return;
-
-  if (ipa_zero(cf->ip) && cf->hostname == NULL)
-    cf_error("IP address or hostname of cache server must be set");
-
-  /* Set default transport type */
-  if (cf->tr_config.spec == NULL)
-  {
-    cf->tr_config.spec = cfg_allocz(sizeof(struct rpki_tr_tcp_config));
-    cf->tr_config.type = RPKI_TR_TCP;
-  }
-
-  if (cf->port == 0)
-  {
-    /* Set default port numbers */
-    switch (cf->tr_config.type)
-    {
-#if HAVE_LIBSSH
-    case RPKI_TR_SSH:
-      cf->port = RPKI_SSH_PORT;
-      break;
-#endif
-    default:
-      cf->port = RPKI_TCP_PORT;
-    }
-  }
-}
-
 static void
-rpki_postconfig(struct proto_config *CF)
+rpki_postconfig(struct cf_context *ctx, struct proto_config *CF)
 {
   /* Define default channel */
   if (EMPTY_LIST(CF->channels))
-    channel_config_new(NULL, net_label[CF->net_type], CF->net_type, CF);
+    channel_config_new(ctx, NULL, net_label[CF->net_type], CF->net_type, CF);
 }
 
 static void
-rpki_copy_config(struct proto_config *dest UNUSED, struct proto_config *src UNUSED)
+rpki_copy_config(struct config *new UNUSED, struct proto_config *dest UNUSED, struct proto_config *src UNUSED)
 {
   /* FIXME: Should copy transport */
 }

@@ -1143,7 +1143,7 @@ bfd_reconfigure(struct proto *P, struct proto_config *c)
 }
 
 static void
-bfd_copy_config(struct proto_config *dest, struct proto_config *src UNUSED)
+bfd_copy_config(struct config *new UNUSED, struct proto_config *dest, struct proto_config *src UNUSED)
 {
   struct bfd_config *d = (struct bfd_config *) dest;
   // struct bfd_config *s = (struct bfd_config *) src;

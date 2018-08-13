@@ -36,6 +36,7 @@
 #include "nest/bird.h"
 #include "lib/flowspec.h"
 #include "conf/conf.h"
+#include "conf/parser.h"
 
 
 static const char* flow4_type_str[] = {
@@ -406,6 +407,8 @@ flow_max_value_length(enum flow_type type, int ipv6)
 void
 flow_check_cf_bmk_values(struct flow_builder *fb, u8 neg, u32 val, u32 mask)
 {
+  struct cf_context *ctx = fb->ctx;
+
   flow_check_cf_value_length(fb, val);
   flow_check_cf_value_length(fb, mask);
 
@@ -434,6 +437,8 @@ flow_check_cf_bmk_values(struct flow_builder *fb, u8 neg, u32 val, u32 mask)
 void
 flow_check_cf_value_length(struct flow_builder *fb, u32 val)
 {
+  struct cf_context *ctx = fb->ctx;
+
   enum flow_type t = fb->this_type;
   u8 max = flow_max_value_length(t, fb->ipv6);
 
@@ -611,8 +616,10 @@ flow6_validate(const byte *nlri, uint len)
  * with a textual description of reason to failing of validation.
  */
 void
-flow4_validate_cf(net_addr_flow4 *f)
+flow4_validate_cf(struct flow_builder *fb, net_addr_flow4 *f)
 {
+  struct cf_context *ctx = fb->ctx;
+
   enum flow_validated_state r = flow4_validate(flow4_first_part(f), flow_read_length(f->data));
 
   if (r != FLOW_ST_VALID)
@@ -627,8 +634,10 @@ flow4_validate_cf(net_addr_flow4 *f)
  * with a textual description of reason to failing of validation.
  */
 void
-flow6_validate_cf(net_addr_flow6 *f)
+flow6_validate_cf(struct flow_builder *fb, net_addr_flow6 *f)
 {
+  struct cf_context *ctx = fb->ctx;
+
   enum flow_validated_state r = flow6_validate(flow6_first_part(f), flow_read_length(f->data));
 
   if (r != FLOW_ST_VALID)
@@ -647,10 +656,10 @@ flow6_validate_cf(net_addr_flow6 *f)
  * This function prepares flowspec builder instance using memory pool @pool.
  */
 struct flow_builder *
-flow_builder_init(pool *pool)
+flow_builder_init(struct cf_context *ctx)
 {
-  struct flow_builder *fb = mb_allocz(pool, sizeof(struct flow_builder));
-  BUFFER_INIT(fb->data, pool, 4);
+  struct flow_builder *fb = mb_allocz(ctx->new_config->pool, sizeof(struct flow_builder));
+  BUFFER_INIT(fb->data, ctx->new_config->pool, 4);
   return fb;
 }
 
@@ -874,8 +883,9 @@ builder_write_parts(struct flow_builder *fb, byte *buf)
  * onto @lpool linear memory pool.
  */
 net_addr_flow4 *
-flow_builder4_finalize(struct flow_builder *fb, linpool *lpool)
+flow_builder4_finalize(struct cf_context *ctx, struct flow_builder *fb)
 {
+  linpool *lpool = ctx->cfg_mem;
   uint data_len = fb->data.used + (fb->data.used < 0xf0 ? 1 : 2);
   net_addr_flow4 *f = lp_alloc(lpool, sizeof(struct net_addr_flow4) + data_len);
 
@@ -904,8 +914,9 @@ flow_builder4_finalize(struct flow_builder *fb, linpool *lpool)
  * onto @lpool linear memory pool.
  */
 net_addr_flow6 *
-flow_builder6_finalize(struct flow_builder *fb, linpool *lpool)
+flow_builder6_finalize(struct cf_context *ctx, struct flow_builder *fb)
 {
+  linpool *lpool = ctx->cfg_mem;
   uint data_len =  fb->data.used + (fb->data.used < 0xf0 ? 1 : 2);
   net_addr_flow6 *n = lp_alloc(lpool, sizeof(net_addr_flow6) + data_len);
 

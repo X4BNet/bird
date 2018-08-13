@@ -502,13 +502,11 @@ bgp_spawn(struct bgp_proto *pp, ip_addr remote_ip)
   bsprintf(fmt, "%s%%0%dd", pp->cf->dynamic_name, pp->cf->dynamic_name_digits);
 
   /* This is hack, we would like to share config, but we need to copy it now */
-  new_config = config;
-  cfg_mem = config->mem;
-  conf_this_scope = config->root_scope;
-  sym = cf_default_name(fmt, &(pp->dynamic_name_counter));
-  proto_clone_config(sym, pp->p.cf);
-  new_config = NULL;
-  cfg_mem = NULL;
+
+  if (!(sym = cf_dynamic_name(config, fmt, &(pp->dynamic_name_counter))))
+    return NULL;
+
+  proto_clone_config(config, sym, pp->p.cf);
 
   /* Just pass remote_ip to bgp_init() */
   ((struct bgp_config *) sym->proto)->remote_ip = remote_ip;
@@ -1255,9 +1253,12 @@ bgp_incoming_connection(sock *sk, uint dummy UNUSED)
   /* For dynamic BGP, spawn new instance and postpone the socket */
   if (bgp_is_dynamic(p))
   {
-    p = bgp_spawn(p, sk->daddr);
-    p->postponed_sk = sk;
-    rmove(sk, p->p.pool);
+    struct bgp_proto *pp = bgp_spawn(p, sk->daddr);
+    if (!pp)
+      goto err;
+
+    pp->postponed_sk = sk;
+    rmove(sk, pp->p.pool);
     return 0;
   }
 
@@ -1863,7 +1864,7 @@ bgp_find_channel_config(struct bgp_config *cf, u32 afi)
 }
 
 struct rtable_config *
-bgp_default_igp_table(struct bgp_config *cf, struct bgp_channel_config *cc, u32 type)
+bgp_default_igp_table(struct cf_context *ctx, struct bgp_config *cf, struct bgp_channel_config *cc, u32 type)
 {
   struct bgp_channel_config *cc2;
   struct rtable_config *tab;
@@ -1893,7 +1894,7 @@ bgp_default_igp_table(struct bgp_config *cf, struct bgp_channel_config *cc, u32 
 
 
 void
-bgp_postconfig(struct proto_config *CF)
+bgp_postconfig(struct cf_context *ctx, struct proto_config *CF)
 {
   struct bgp_config *cf = (void *) CF;
 
@@ -2023,10 +2024,10 @@ bgp_postconfig(struct proto_config *CF)
     if ((cc->gw_mode == GW_RECURSIVE) && !cc->desc->no_igp)
     {
       if (!cc->igp_table_ip4 && (bgp_cc_is_ipv4(cc) || cc->ext_next_hop))
-	cc->igp_table_ip4 = bgp_default_igp_table(cf, cc, NET_IP4);
+	cc->igp_table_ip4 = bgp_default_igp_table(ctx, cf, cc, NET_IP4);
 
       if (!cc->igp_table_ip6 && (bgp_cc_is_ipv6(cc) || cc->ext_next_hop))
-	cc->igp_table_ip6 = bgp_default_igp_table(cf, cc, NET_IP6);
+	cc->igp_table_ip6 = bgp_default_igp_table(ctx, cf, cc, NET_IP6);
 
       if (cc->igp_table_ip4 && bgp_cc_is_ipv6(cc) && !cc->ext_next_hop)
 	cf_error("Mismatched IGP table type");
@@ -2151,7 +2152,7 @@ bgp_channel_reconfigure(struct channel *C, struct channel_config *CC, int *impor
 }
 
 static void
-bgp_copy_config(struct proto_config *dest, struct proto_config *src)
+bgp_copy_config(struct config *new, struct proto_config *dest, struct proto_config *src)
 {
   struct bgp_config *d = (void *) dest;
   struct bgp_config *s = (void *) src;
@@ -2159,7 +2160,7 @@ bgp_copy_config(struct proto_config *dest, struct proto_config *src)
   /* Copy BFD options */
   if (s->bfd)
   {
-    struct bfd_options *opts = cfg_alloc(sizeof(struct bfd_options));
+    struct bfd_options *opts = cf_alloc(new, sizeof(struct bfd_options));
     memcpy(opts, s->bfd, sizeof(struct bfd_options));
     d->bfd = opts;
   }

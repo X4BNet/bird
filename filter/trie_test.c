@@ -12,6 +12,7 @@
 #include "filter/filter.h"
 #include "filter/data.h"
 #include "conf/conf.h"
+#include "conf/parser.h"
 
 #define TESTS_NUM		10
 #define PREFIXES_NUM 		10
@@ -95,15 +96,14 @@ generate_random_ipv6_prefixes(list *prefixes)
 static int
 t_match_net(void)
 {
-  bt_bird_init();
-  bt_config_parse(BT_CONFIG_SIMPLE);
+  struct cf_context *ctx = bt_bird_init();
 
   uint round;
   for (round = 0; round < TESTS_NUM; round++)
   {
     list prefixes; /* of structs f_extended_prefix */
     init_list(&prefixes);
-    struct f_trie *trie = f_new_trie(config->mem, 0);
+    struct f_trie *trie = f_new_trie(ctx->cfg_mem, 0);
 
     generate_random_ipv6_prefixes(&prefixes);
     struct f_prefix_node *n;
@@ -130,21 +130,20 @@ t_match_net(void)
     }
   }
 
-  bt_bird_cleanup();
+  bt_bird_cleanup(ctx);
   return 1;
 }
 
 static int
 t_trie_same(void)
 {
-  bt_bird_init();
-  bt_config_parse(BT_CONFIG_SIMPLE);
+  struct cf_context *ctx = bt_bird_init();
 
   int round;
   for (round = 0; round < TESTS_NUM*4; round++)
   {
-    struct f_trie * trie1 = f_new_trie(config->mem, 0);
-    struct f_trie * trie2 = f_new_trie(config->mem, 0);
+    struct f_trie * trie1 = f_new_trie(ctx->cfg_mem, 0);
+    struct f_trie * trie2 = f_new_trie(ctx->cfg_mem, 0);
 
     list prefixes; /* a list of f_extended_prefix structures */
     init_list(&prefixes);
@@ -179,12 +178,8 @@ main(int argc, char *argv[])
 {
   bt_init(argc, argv);
 
-  the_bird_lock();
-
   bt_test_suite(t_match_net, "Testing random prefix matching");
   bt_test_suite(t_trie_same, "A trie filled forward should be same with a trie filled backward.");
-
-  the_bird_unlock();
 
   return bt_exit_value();
 }

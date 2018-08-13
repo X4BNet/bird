@@ -54,11 +54,10 @@
 #include "lib/event.h"
 #include "lib/timer.h"
 #include "conf/conf.h"
+#include "conf/parser.h"
 #include "filter/filter.h"
 #include "sysdep/unix/unix.h"
 
-
-static jmp_buf conf_jmpbuf;
 
 struct config *config, *new_config;
 
@@ -87,23 +86,17 @@ int undo_available;			/* Undo was not requested from last reconfiguration */
  * further use. Returns a pointer to the structure.
  */
 struct config *
-config_alloc(const char *name)
+config_alloc(struct pool *pp, struct linpool *lp)
 {
-  pool *p = rp_new(&root_pool, "Config");
-  linpool *l = lp_new_default(p);
+  pool *p = rp_new(pp ?: &root_pool, "Config");
+  linpool *l = lp ?: lp_new_default(p);
   struct config *c = lp_allocz(l, sizeof(struct config));
-
-  /* Duplication of name string in local linear pool */
-  uint nlen = strlen(name) + 1;
-  char *ndup = lp_allocu(l, nlen);
-  memcpy(ndup, name, nlen);
 
   init_list(&c->tests);
   init_list(&c->symbols);
   c->mrtdump_file = -1; /* Hack, this should be sysdep-specific */
   c->pool = p;
   c->mem = l;
-  c->file_name = ndup;
   c->load_time = current_time();
   c->tf_route = c->tf_proto = TM_ISO_SHORT_MS;
   c->tf_base = c->tf_log = TM_ISO_LONG_MS;
@@ -112,77 +105,78 @@ config_alloc(const char *name)
   return c;
 }
 
-/**
- * config_parse - parse a configuration
- * @c: configuration
- *
- * config_parse() reads input by calling a hook function pointed to
- * by @cf_read_hook and parses it according to the configuration
- * grammar. It also calls all the preconfig and postconfig hooks
- * before, resp. after parsing.
- *
- * Result: 1 if the config has been parsed successfully, 0 if any
- * error has occurred (such as anybody calling cf_error()) and
- * the @err_msg field has been set to the error message.
- */
 int
-config_parse(struct config *c)
+config_parse(struct conf_order *order)
 {
-  int done = 0;
-  DBG("Parsing configuration file `%s'\n", c->file_name);
-  new_config = c;
-  cfg_mem = c->mem;
-  if (setjmp(conf_jmpbuf))
-    goto cleanup;
+  DBG("Parsing configuration named `%s'\n", order->state->name);
 
-  cf_lex_init(0, c);
-  sysdep_preconfig(c);
-  protos_preconfig(c);
-  rt_preconfig(c);
-  cf_parse();
+  if (!order->new_config)
+    order->new_config = config_alloc(order->pool, order->lp);
 
-  if (EMPTY_LIST(c->protos))
+  struct cf_context *ctx = cf_new_context(order);
+  int ret;
+
+  if (setjmp(ctx->jmpbuf))
+    {
+      if (order->cf_outclude)
+	while (! order->cf_outclude(order))
+	  ;
+
+      ret = 0;
+
+      config_free(ctx->new_config);
+      order->new_config = NULL;
+
+      goto cleanup;
+    }
+
+  sysdep_preconfig(ctx);
+  protos_preconfig(ctx->new_config);
+  rt_preconfig(ctx);
+  cfx_parse(ctx, ctx->yyscanner);
+
+  if (EMPTY_LIST((ctx->new_config)->protos))
     cf_error("No protocol is specified in the config file");
 
-  /*
-  if (!c->router_id)
-    cf_error("Router ID must be configured manually");
-  */
-
-  done = 1;
+  ret = 1;
 
 cleanup:
-  new_config = NULL;
-  cfg_mem = NULL;
-  return done;
+  cf_free_context(ctx);
+  order->ctx = NULL;
+  return ret;
 }
 
-/**
- * cli_parse - parse a CLI command
- * @c: temporary config structure
- *
- * cli_parse() is similar to config_parse(), but instead of a configuration,
- * it parses a CLI command. See the CLI module for more information.
- */
 int
-cli_parse(struct config *c)
+cli_parse(struct conf_order *order)
 {
-  int done = 0;
-  c->fallback = config;
-  new_config = c;
-  cfg_mem = c->mem;
-  if (setjmp(conf_jmpbuf))
-    goto cleanup;
+  DBG("Parsing command line\n");
 
-  cf_lex_init(1, c);
-  cf_parse();
-  done = 1;
+  struct config cc = {}, *gc = config;
+  cc.pool = rp_new(order->pool ?: &root_pool, "CLI Dummy Config");
+  cc.mem = order->lp ?: lp_new_default(cc.pool);
 
-cleanup:
-  c->fallback = NULL;
-  new_config = NULL;
-  cfg_mem = NULL;
-  return done;
+  config_add_obstacle(gc);
+  cc.cli_sym = &(gc->sym_hash);
+  init_list(&cc.symbols);
+
+  order->new_config = &cc;
+
+  struct cf_context *ctx = cf_new_context(order);
+
+  int ok = 0;
+  if (setjmp(ctx->jmpbuf))
+    goto done;
+
+  cfx_parse(ctx, ctx->yyscanner);
+  ok = 1;
+
+done:
+  cf_free_context(ctx);
+  config_free(&cc);
+  config_del_obstacle(gc);
+  order->new_config = NULL;
+  order->ctx = NULL;
+  return ok;
 }
 
 /**
@@ -495,6 +489,8 @@ config_init(void)
 
   config_timer = tm_new(&root_pool);
   config_timer->hook = config_timeout;
+
+  cf_init_kh();
 }
 
 /**
@@ -536,51 +532,26 @@ order_shutdown(int gr)
  * error in the configuration.
  */
 void
-cf_error(const char *msg, ...)
+cf_error_(struct cf_context *ctx, const char *msg, ...)
 {
-  char buf[1024];
   va_list args;
 
   va_start(args, msg);
-  if (bvsnprintf(buf, sizeof(buf), msg, args) < 0)
-    strcpy(buf, "<bug: error message too long>");
+  ctx->order->cf_error_hook(ctx->order, msg, args);
   va_end(args);
-  new_config->err_msg = cfg_strdup(buf);
-  new_config->err_lino = ifs->lino;
-  new_config->err_chno = ifs->chno - ifs->toklen + 1;
-  new_config->err_file_name = ifs->file_name;
-  cf_lex_unwind();
-  longjmp(conf_jmpbuf, 1);
-}
 
-/**
- * cfg_strdup - copy a string to config memory
- * @c: string to copy
- *
- * cfg_strdup() creates a new copy of the string in the memory
- * pool associated with the configuration being currently parsed.
- * It's often used when a string literal occurs in the configuration
- * and we want to preserve it for further use.
- */
-char *
-cfg_strdup(const char *c)
-{
-  int l = strlen(c) + 1;
-  char *z = cfg_allocu(l);
-  memcpy(z, c, l);
-  return z;
+  longjmp(ctx->jmpbuf, 1);
 }
-
 
 void
-cfg_copy_list(list *dest, list *src, unsigned node_size)
+cf_copy_list(struct config *cf, list *dest, list *src, unsigned node_size)
 {
   node *dn, *sn;
 
   init_list(dest);
   WALK_LIST(sn, *src)
   {
-    dn = cfg_alloc(node_size);
+    dn = lp_alloc(cf->mem, node_size);
     memcpy(dn, sn, node_size);
     memset(dn, 0, sizeof(node));
     add_tail(dest, dn);

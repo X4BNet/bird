@@ -128,8 +128,6 @@ struct rpki_config {
   u8 ignore_max_length:1;		/* Ignore received max length and use MAX_PREFIX_LENGTH instead */
 };
 
-void rpki_check_config(struct rpki_config *cf);
-
 
 /*
  *	Logger

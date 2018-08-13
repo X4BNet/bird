@@ -12,8 +12,8 @@ CF_HDR
 
 CF_DEFINES
 
-#define BGP_CFG ((struct bgp_config *) this_proto)
-#define BGP_CC ((struct bgp_channel_config *) this_channel)
+#define BGP_CFG ((struct bgp_config *) ctx->this_proto)
+#define BGP_CC ((struct bgp_channel_config *) ctx->this_channel)
 
 CF_DECLS
 
@@ -47,7 +47,7 @@ CF_GRAMMAR
 proto: bgp_proto '}'  ;
 
 bgp_proto_start: proto_start BGP {
-     this_proto = proto_config_new(&proto_bgp, $1);
+     ctx->this_proto = proto_config_new(ctx->new_config, &proto_bgp, $1);
      BGP_CFG->local_port = BGP_PORT;
      BGP_CFG->remote_port = BGP_PORT;
      BGP_CFG->multihop = -1;	/* undefined */
@@ -163,7 +163,7 @@ bgp_proto:
  | bgp_proto DEFAULT BGP_MED expr ';' { BGP_CFG->default_med = $4; }
  | bgp_proto DEFAULT BGP_LOCAL_PREF expr ';' { BGP_CFG->default_local_pref = $4; }
  | bgp_proto SOURCE ADDRESS ipa ';' { BGP_CFG->local_ip = $4; }
- | bgp_proto START DELAY TIME expr ';' { BGP_CFG->connect_delay_time = $5; log(L_WARN "%s: Start delay time option is deprecated, use connect delay time", this_proto->name); }
+ | bgp_proto START DELAY TIME expr ';' { BGP_CFG->connect_delay_time = $5; log(L_WARN "%s: Start delay time option is deprecated, use connect delay time", ctx->this_proto->name); }
  | bgp_proto CONNECT DELAY TIME expr ';' { BGP_CFG->connect_delay_time = $5; }
  | bgp_proto CONNECT RETRY TIME expr ';' { BGP_CFG->connect_retry_time = $5; }
  | bgp_proto KEEPALIVE TIME expr ';' { BGP_CFG->keepalive_time = $4; }
@@ -192,9 +192,9 @@ bgp_proto:
  | bgp_proto LONG LIVED STALE TIME expr ';' { BGP_CFG->llgr_time = $6; }
  | bgp_proto TTL SECURITY bool ';' { BGP_CFG->ttl_security = $4; }
  | bgp_proto CHECK LINK bool ';' { BGP_CFG->check_link = $4; }
- | bgp_proto BFD bool ';' { if ($3) init_bfd_opts(&BGP_CFG->bfd); else BGP_CFG->bfd = NULL; }
- | bgp_proto BFD GRACEFUL ';' { init_bfd_opts(&BGP_CFG->bfd); BGP_CFG->bfd->mode = BGP_BFD_GRACEFUL; }
- | bgp_proto BFD { open_bfd_opts(&BGP_CFG->bfd); } bfd_opts { close_bfd_opts(); } ';'
+ | bgp_proto BFD bool ';' { if ($3) init_bfd_opts(ctx, &BGP_CFG->bfd); else BGP_CFG->bfd = NULL; }
+ | bgp_proto BFD GRACEFUL ';' { init_bfd_opts(ctx, &BGP_CFG->bfd); BGP_CFG->bfd->mode = BGP_BFD_GRACEFUL; }
+ | bgp_proto BFD { open_bfd_opts(ctx, &BGP_CFG->bfd); } bfd_opts { close_bfd_opts(ctx); } ';'
  | bgp_proto ENFORCE FIRST AS bool ';' { BGP_CFG->enforce_first_as = $5; }
  ;
 
@@ -220,7 +220,7 @@ bgp_channel_start: bgp_afi
   if (!desc)
     cf_error("Unknown AFI/SAFI");
 
-  this_channel = channel_config_get(&channel_bgp, desc->name, desc->net, this_proto);
+  ctx->this_channel = channel_config_get(ctx, &channel_bgp, desc->name, desc->net, ctx->this_proto);
 
   /* New channel */
   if (!BGP_CC->desc)
@@ -251,7 +251,7 @@ bgp_channel_item:
  | NEXT HOP SELF bgp_nh { BGP_CC->next_hop_self = $4; }
  | NEXT HOP KEEP bgp_nh { BGP_CC->next_hop_keep = $4; }
  | MANDATORY bool { BGP_CC->mandatory = $2; }
- | MISSING LLADDR bgp_lladdr { log(L_WARN "%s.%s: Missing lladdr option is deprecated and ignored, remove it", this_proto->name, this_channel->name); }
+ | MISSING LLADDR bgp_lladdr { log(L_WARN "%s.%s: Missing lladdr option is deprecated and ignored, remove it", ctx->this_proto->name, ctx->this_channel->name); }
  | GATEWAY DIRECT { BGP_CC->gw_mode = GW_DIRECT; }
  | GATEWAY RECURSIVE { BGP_CC->gw_mode = GW_RECURSIVE; }
  | SECONDARY bool { BGP_CC->secondary = $2; }
@@ -292,10 +292,10 @@ bgp_channel_opt_list:
 
 bgp_channel_end:
 {
-  if (!this_channel->table)
+  if (!ctx->this_channel->table)
     cf_error("Routing table not specified");
 
-  this_channel = NULL;
+  ctx->this_channel = NULL;
 };
 
 bgp_proto_channel: bgp_channel_start bgp_channel_opt_list bgp_channel_end;

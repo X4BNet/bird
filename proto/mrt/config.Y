@@ -13,7 +13,7 @@ CF_HDR
 
 CF_DEFINES
 
-#define MRT_CFG ((struct mrt_config *) this_proto)
+#define MRT_CFG ((struct mrt_config *) ctx->this_proto)
 
 CF_DECLS
 
@@ -27,7 +27,7 @@ proto: mrt_proto ;
 
 mrt_proto_start: proto_start MRT
 {
-  this_proto = proto_config_new(&proto_mrt, $1);
+  ctx->this_proto = proto_config_new(ctx->new_config, &proto_mrt, $1);
 };
 
 mrt_proto_item:
@@ -47,11 +47,11 @@ mrt_proto_opts:
  ;
 
 mrt_proto:
-   mrt_proto_start proto_name '{' mrt_proto_opts '}' { mrt_check_config(this_proto); };
+   mrt_proto_start proto_name '{' mrt_proto_opts '}' { mrt_check_config(ctx, ctx->this_proto); };
 
 CF_CLI_HELP(MRT DUMP, [table <name>|\"<pattern>\"] [to \"<file>\"] [filter <filter>|where <where filter>] , [[Save MRT Table Dump into a file]])
 CF_CLI(MRT DUMP, mrt_dump_args, [table <name>|\"<pattern>\"] [to \"<file>\"] [filter <filter>|where <where filter>], [[Save mrt table dump v2 of table name <t> right now]])
-{ mrt_dump_cmd($3); } ;
+{ mrt_dump_cmd(ctx, $3); } ;
 
 mrt_dump_args:
    /* empty */ { $$ = cfg_allocz(sizeof(struct mrt_dump_data)); }

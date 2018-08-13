@@ -11,13 +11,12 @@ CF_HDR
 
 CF_DEFINES
 
-#define BFD_CFG ((struct bfd_config *) this_proto)
-#define BFD_IFACE ((struct bfd_iface_config *) this_ipatt)
-#define BFD_NEIGHBOR this_bfd_neighbor
+/* BFD is available, override the trap in conf/confbase.Y */
+#undef BFD_CHECK
+#define BFD_CHECK(x)
 
-static struct bfd_neighbor *this_bfd_neighbor;
-
-extern struct bfd_config *bfd_cf;
+#define BFD_CFG ((struct bfd_config *) ctx->this_proto)
+#define BFD_IFACE ((struct bfd_iface_config *) ctx->this_ipatt)
 
 CF_DECLS
 
@@ -35,7 +34,7 @@ proto: bfd_proto ;
 
 bfd_proto_start: proto_start BFD
 {
-  this_proto = proto_config_new(&proto_bfd, $1);
+  ctx->this_proto = proto_config_new(ctx->new_config, &proto_bfd, $1);
   init_list(&BFD_CFG->patt_list);
   init_list(&BFD_CFG->neigh_list);
   BFD_CFG->accept_ipv4 = BFD_CFG->accept_ipv6 = 1;
@@ -76,21 +75,21 @@ bfd_accept:
 
 bfd_iface_start:
 {
-  this_ipatt = cfg_allocz(sizeof(struct bfd_iface_config));
-  add_tail(&BFD_CFG->patt_list, NODE this_ipatt);
-  init_list(&this_ipatt->ipn_list);
+  ctx->this_ipatt = cfg_allocz(sizeof(struct bfd_iface_config));
+  add_tail(&BFD_CFG->patt_list, NODE ctx->this_ipatt);
+  init_list(&ctx->this_ipatt->ipn_list);
 
   BFD_IFACE->min_rx_int = BFD_DEFAULT_MIN_RX_INT;
   BFD_IFACE->min_tx_int = BFD_DEFAULT_MIN_TX_INT;
   BFD_IFACE->idle_tx_int = BFD_DEFAULT_IDLE_TX_INT;
   BFD_IFACE->multiplier = BFD_DEFAULT_MULTIPLIER;
 
-  reset_passwords();
+  reset_passwords(ctx);
 };
 
 bfd_iface_finish:
 {
-  BFD_IFACE->passwords = get_passwords();
+  BFD_IFACE->passwords = get_passwords(ctx);
 
   if (!BFD_IFACE->auth_type != !BFD_IFACE->passwords)
     log(L_WARN "Authentication and password options should be used together");
@@ -164,13 +163,13 @@ bfd_neigh_multihop:
 
 bfd_neighbor: ipa bfd_neigh_iface bfd_neigh_local bfd_neigh_multihop
 {
-  this_bfd_neighbor = cfg_allocz(sizeof(struct bfd_neighbor));
-  add_tail(&BFD_CFG->neigh_list, NODE this_bfd_neighbor);
+  struct bfd_neighbor *neighbor = cfg_allocz(sizeof(struct bfd_neighbor));
+  add_tail(&BFD_CFG->neigh_list, NODE neighbor);
 
-  BFD_NEIGHBOR->addr = $1;
-  BFD_NEIGHBOR->local = $3;
-  BFD_NEIGHBOR->iface = $2;
-  BFD_NEIGHBOR->multihop = $4;
+  neighbor->addr = $1;
+  neighbor->local = $3;
+  neighbor->iface = $2;
+  neighbor->multihop = $4;
 
   if ($4 && $2)
     cf_error("Neighbor cannot set both interface and multihop");

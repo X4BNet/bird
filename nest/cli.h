@@ -48,13 +48,13 @@ typedef struct cli {
 } cli;
 
 extern pool *cli_pool;
-extern struct cli *this_cli;		/* Used during parsing */
+extern _Thread_local struct cli *this_cli;		/* Used during parsing */
 
 #define CLI_ASYNC_CODE 10000
 
 /* Functions to be called by command handlers */
 
-void cli_printf(cli *, int, char *, ...);
+void cli_printf(cli *, int, const char *, ...);
 #define cli_msg(x...) cli_printf(this_cli, x)
 void cli_set_log_echo(cli *, uint mask, uint size);
 

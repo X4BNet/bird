@@ -13,22 +13,12 @@
 #include "filter/data.h"
 #include "conf/conf.h"
 
-#define MAX_TREE_HEIGHT 13
-
-static void
-start_conf_env(void)
-{
-  bt_bird_init();
-
-  pool *p = rp_new(&root_pool, "helper_pool");
-  linpool *l = lp_new_default(p);
-  cfg_mem = l;
-}
+#define MAX_TREE_HEIGHT 10
 
 static struct f_tree *
-new_tree(uint id)
+new_tree(struct cf_context *ctx, uint id)
 {
-  struct f_tree *tree = f_new_tree();
+  struct f_tree *tree = f_new_tree(ctx);
   tree->from.type  = tree->to.type  = T_INT;
   tree->from.val.i = tree->to.val.i = id;
 
@@ -72,26 +62,26 @@ get_nodes_count_full_bin_tree(uint height)
 }
 
 static struct f_tree *
-get_balanced_full_subtree(uint height, uint idx)
+get_balanced_full_subtree(struct cf_context *ctx, uint height, uint idx)
 {
-  struct f_tree *node = new_tree(idx);
+  struct f_tree *node = new_tree(ctx, idx);
   if (height > 0)
   {
     uint nodes_in_subtree = get_nodes_count_full_bin_tree(--height);
-    node->left  = get_balanced_full_subtree(height, idx - nodes_in_subtree/2 - 1);
-    node->right = get_balanced_full_subtree(height, idx + nodes_in_subtree/2 + 1);
+    node->left  = get_balanced_full_subtree(ctx, height, idx - nodes_in_subtree/2 - 1);
+    node->right = get_balanced_full_subtree(ctx, height, idx + nodes_in_subtree/2 + 1);
   }
   return node;
 }
 
 static struct f_tree *
-get_balanced_full_tree(uint height)
+get_balanced_full_tree(struct cf_context *ctx, uint height)
 {
-  return get_balanced_full_subtree(height, get_nodes_count_full_bin_tree(height)/2);
+  return get_balanced_full_subtree(ctx, height, get_nodes_count_full_bin_tree(height)/2);
 }
 
 static struct f_tree *
-get_degenerated_left_tree(uint nodes_count)
+get_degenerated_left_tree(struct cf_context *ctx, uint nodes_count)
 {
   struct f_tree *old = NULL;
   struct f_tree *new = NULL;
@@ -100,7 +90,7 @@ get_degenerated_left_tree(uint nodes_count)
   for (i = 0; i < nodes_count; i++)
   {
     old = new;
-    new = new_tree(nodes_count-1-i);
+    new = new_tree(ctx, nodes_count-1-i);
     new->left = old;
   }
 
@@ -108,9 +98,9 @@ get_degenerated_left_tree(uint nodes_count)
 }
 
 static struct f_tree *
-get_random_degenerated_left_tree(uint nodes_count)
+get_random_degenerated_left_tree(struct cf_context *ctx, uint nodes_count)
 {
-  struct f_tree *tree = get_degenerated_left_tree(nodes_count);
+  struct f_tree *tree = get_degenerated_left_tree(ctx, nodes_count);
 
   size_t avaible_indexes_size = nodes_count * sizeof(byte);
   byte *avaible_indexes = malloc(avaible_indexes_size);
@@ -135,9 +125,9 @@ get_random_degenerated_left_tree(uint nodes_count)
 }
 
 static struct f_tree *
-get_balanced_tree_with_ranged_values(uint nodes_count)
+get_balanced_tree_with_ranged_values(struct cf_context *ctx, uint nodes_count)
 {
-  struct f_tree *tree = get_degenerated_left_tree(nodes_count);
+  struct f_tree *tree = get_degenerated_left_tree(ctx, nodes_count);
 
   uint idx = 0;
   struct f_tree *n;
@@ -156,17 +146,17 @@ get_balanced_tree_with_ranged_values(uint nodes_count)
 static int
 t_balancing(void)
 {
-  start_conf_env();
+  struct cf_context *ctx = bt_bird_init();
 
   uint height;
   for (height = 1; height < MAX_TREE_HEIGHT; height++)
   {
     uint nodes_count = get_nodes_count_full_bin_tree(height);
 
-    struct f_tree *simple_degenerated_tree = get_degenerated_left_tree(nodes_count);
+    struct f_tree *simple_degenerated_tree = get_degenerated_left_tree(ctx, nodes_count);
     show_tree(simple_degenerated_tree);
 
-    struct f_tree *expected_balanced_tree = get_balanced_full_tree(height);
+    struct f_tree *expected_balanced_tree = get_balanced_full_tree(ctx, height);
     show_tree(expected_balanced_tree);
 
     struct f_tree *balanced_tree_from_simple = build_tree(simple_degenerated_tree);
@@ -175,6 +165,8 @@ t_balancing(void)
     bt_assert(same_tree(balanced_tree_from_simple, expected_balanced_tree));
   }
 
+  bt_bird_cleanup(ctx);
+
   return 1;
 }
 
@@ -182,19 +174,19 @@ t_balancing(void)
 static int
 t_balancing_random(void)
 {
-  start_conf_env();
+  struct cf_context *ctx = bt_bird_init();
 
   uint height;
   for (height = 1; height < MAX_TREE_HEIGHT; height++)
   {
     uint nodes_count = get_nodes_count_full_bin_tree(height);
 
-    struct f_tree *expected_balanced_tree = get_balanced_full_tree(height);
+    struct f_tree *expected_balanced_tree = get_balanced_full_tree(ctx, height);
 
     uint i;
     for(i = 0; i < 10; i++)
     {
-      struct f_tree *random_degenerated_tree = get_random_degenerated_left_tree(nodes_count);
+      struct f_tree *random_degenerated_tree = get_random_degenerated_left_tree(ctx, nodes_count);
       show_tree(random_degenerated_tree);
 
       struct f_tree *balanced_tree_from_random = build_tree(random_degenerated_tree);
@@ -206,20 +198,22 @@ t_balancing_random(void)
     }
   }
 
+  bt_bird_cleanup(ctx);
+
   return 1;
 }
 
 static int
 t_find(void)
 {
-  start_conf_env();
+  struct cf_context *ctx = bt_bird_init();
 
   uint height;
   for (height = 1; height < MAX_TREE_HEIGHT; height++)
   {
     uint nodes_count = get_nodes_count_full_bin_tree(height);
 
-    struct f_tree *tree = get_balanced_full_tree(height);
+    struct f_tree *tree = get_balanced_full_tree(ctx, height);
     show_tree(tree);
 
     struct f_val looking_up_value = {
@@ -231,6 +225,8 @@ t_find(void)
       bt_assert((val_compare(&looking_up_value, &(found_tree->from)) == 0) && (val_compare(&looking_up_value, &(found_tree->to)) == 0));
     }
   }
+
+  bt_bird_cleanup(ctx);
 
   return 1;
 }
@@ -258,14 +254,14 @@ get_max_value_in_unbalanced_tree(struct f_tree *node, uint max)
 static int
 t_find_ranges(void)
 {
-  start_conf_env();
+  struct cf_context *ctx = bt_bird_init();
 
   uint height;
   for (height = 1; height < MAX_TREE_HEIGHT; height++)
   {
     uint nodes_count = get_nodes_count_full_bin_tree(height);
 
-    struct f_tree *tree = get_balanced_tree_with_ranged_values(nodes_count);
+    struct f_tree *tree = get_balanced_tree_with_ranged_values(ctx, nodes_count);
     uint max_value = get_max_value_in_unbalanced_tree(tree, 0);
 
     show_tree(tree);
@@ -288,6 +284,8 @@ t_find_ranges(void)
     }
   }
 
+  bt_bird_cleanup(ctx);
+
   return 1;
 }
 
@@ -296,14 +294,10 @@ main(int argc, char *argv[])
 {
   bt_init(argc, argv);
 
-  the_bird_lock();
-
   bt_test_suite(t_balancing, "Balancing strong unbalanced trees");
   bt_test_suite(t_balancing_random, "Balancing random unbalanced trees");
   bt_test_suite(t_find, "Finding values in trees");
   bt_test_suite(t_find_ranges, "Finding values in trees with random ranged values");
-
-  the_bird_unlock();
 
   return bt_exit_value();
 }

@@ -62,4 +62,7 @@ extern DOMAIN(the_bird) the_bird_domain;
 
 #define ASSERT_THE_BIRD_LOCKED	({ if (!the_bird_locked()) bug("The BIRD lock must be locked here: %s:%d", __FILE__, __LINE__); })
 
+/* Thread-local resources available for use without locking */
+extern _Thread_local struct linpool *lp_local;
+
 #endif

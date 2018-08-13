@@ -300,7 +300,7 @@ bt_log_suite_result(int result, const char *fmt, ...)
 void
 bt_log_suite_case_result(int result, const char *fmt, ...)
 {
-  if(bt_verbose >= BT_VERBOSE_SUITE_CASE)
+  if (bt_verbose >= BT_VERBOSE_SUITE_CASE)
   {
     va_list argptr;
     va_start(argptr, fmt);
@@ -513,27 +513,19 @@ bt_is_char(byte c)
 
 int parse_and_exit;
 char *bird_name;
-void async_config(void) {}
 void async_dump(void) {}
 void async_shutdown(void) {}
 char *get_hostname(linpool *lp UNUSED) { return NULL; }
-void cmd_check_config(char *name UNUSED) {}
-void cmd_reconfig(char *name UNUSED, int type UNUSED, int timeout UNUSED) {}
-void cmd_reconfig_confirm(void) {}
-void cmd_reconfig_undo(void) {}
-void cmd_reconfig_status(void) {}
 void cmd_graceful_restart(void) {}
 void cmd_shutdown(void) {}
-void cmd_reconfig_undo_notify(void) {}
 
 #include "nest/bird.h"
 #include "lib/net.h"
 #include "conf/conf.h"
-void sysdep_preconfig(struct config *c UNUSED) {}
-int sysdep_commit(struct config *new UNUSED, struct config *old UNUSED) { return 0; }
+//void sysdep_preconfig(struct cf_context *ctx UNUSED) {}
+//int sysdep_commit(struct config *new UNUSED, struct config *old UNUSED) { return 0; }
 void sysdep_shutdown_done(void) {}
 
 #include "nest/cli.h"
 int cli_get_command(cli *c UNUSED) { return 0; }
 void cli_write_trigger(cli *c UNUSED) {}
-cli *cmd_reconfig_stored_cli;

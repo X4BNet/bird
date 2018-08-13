@@ -40,6 +40,7 @@
 #include "lib/timer.h"
 #include "lib/string.h"
 #include "conf/conf.h"
+#include "conf/parser.h"
 #include "filter/filter.h"
 #include "filter/data.h"
 #include "lib/hash.h"
@@ -2725,8 +2726,10 @@ done:
 }
 
 void
-rt_preconfig(struct config *c)
+rt_preconfig(struct cf_context *ctx)
 {
+  struct config *c = ctx->new_config;
+
   init_list(&c->tables);
 
   c->def_table_attrs = cfg_allocz(sizeof(struct rtable_config));
@@ -2734,8 +2737,8 @@ rt_preconfig(struct config *c)
   c->def_table_attrs->max_settle_time = 20 S;
   c->def_table_attrs->export_settle_time = 10 MS;
 
-  rt_new_table(cf_get_symbol("master4"), NET_IP4);
-  rt_new_table(cf_get_symbol("master6"), NET_IP6);
+  rt_new_table(ctx, cf_get_symbol(ctx, "master4"), NET_IP4);
+  rt_new_table(ctx, cf_get_symbol(ctx, "master6"), NET_IP6);
 }
 
 
@@ -3013,30 +3016,30 @@ rt_next_hop_update(rtable_private *tab)
 
 
 struct rtable_config *
-rt_new_table(struct symbol *s, uint addr_type)
+rt_new_table(struct cf_context *ctx, struct symbol *s, uint addr_type)
 {
   /* Hack that allows to 'redefine' the master table */
   if ((s->class == SYM_TABLE) &&
-      (s->table == new_config->def_tables[addr_type]) &&
+      (s->table == ctx->new_config->def_tables[addr_type]) &&
       ((addr_type == NET_IP4) || (addr_type == NET_IP6)))
     return s->table;
 
   struct rtable_config *c = cfg_allocz(sizeof(struct rtable_config));
 
-  cf_define_symbol(s, SYM_TABLE, table, c);
+  cf_define_symbol(ctx, s, SYM_TABLE, table, c);
   c->name = s->name;
   c->addr_type = addr_type;
   c->gc_max_ops = 1000;
   c->gc_min_time = 5;
-  c->min_settle_time = new_config->def_table_attrs->min_settle_time;
-  c->max_settle_time = new_config->def_table_attrs->max_settle_time;
-  c->export_settle_time = new_config->def_table_attrs->export_settle_time;
+  c->min_settle_time = ctx->new_config->def_table_attrs->min_settle_time;
+  c->max_settle_time = ctx->new_config->def_table_attrs->max_settle_time;
+  c->export_settle_time = ctx->new_config->def_table_attrs->export_settle_time;
 
-  add_tail(&new_config->tables, &c->n);
+  add_tail(&ctx->new_config->tables, &c->n);
 
   /* First table of each type is kept as default */
-  if (! new_config->def_tables[addr_type])
-    new_config->def_tables[addr_type] = c;
+  if (!ctx->new_config->def_tables[addr_type])
+    ctx->new_config->def_tables[addr_type] = c;
 
   return c;
 }

@@ -30,6 +30,7 @@ struct symbol;
 struct timer;
 struct filter;
 struct cli;
+struct cf_context;
 
 /*
  *	Generic data structure for storing network prefixes. Also used
@@ -551,7 +552,7 @@ extern list routing_tables;
 struct config;
 
 void rt_init(void);
-void rt_preconfig(struct config *);
+void rt_preconfig(struct cf_context *);
 void rt_commit(struct config *new, struct config *old);
 void rt_lock_table(rtable_private *);
 void rt_unlock_table(rtable_private *);
@@ -591,7 +592,7 @@ void rt_flush_channel(struct channel *c, linpool *lp);
 void rt_prune_sync(rtable *t, int all);
 int rte_update_out(struct channel *c, linpool *lp, rte *new, rte *old, struct rte_storage **old_stored);
 int rte_update_in(struct channel *c, rte *new);
-struct rtable_config *rt_new_table(struct symbol *s, uint addr_type);
+struct rtable_config *rt_new_table(struct cf_context *ctx, struct symbol *s, uint addr_type);
 
 /* Default limit for ECMP next hops, defined in sysdep code */
 extern const int rt_default_ecmp;
@@ -605,6 +606,7 @@ struct rt_show_data_rtable {
 struct rt_show_data {
   net_addr *addr;
   list tables;
+  struct cf_context *ctx;              /* Parent parser context */
   struct rt_show_data_rtable *tab;	/* Iterator over table list */
   rtable_private *tab_priv;		/* Private (if locked) */
   struct rt_show_data_rtable *last_table; /* Last table in output */

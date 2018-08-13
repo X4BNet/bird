@@ -13,7 +13,7 @@ CF_HDR
 
 CF_DEFINES
 
-#define PERF_CFG ((struct perf_config *) this_proto)
+#define PERF_CFG ((struct perf_config *) ctx->this_proto)
 
 CF_DECLS
 
@@ -25,7 +25,7 @@ proto: perf_proto '}' ;
 
 perf_proto_start: proto_start PERF
 {
-  this_proto = proto_config_new(&proto_perf, $1);
+  ctx->this_proto = proto_config_new(ctx->new_config, &proto_perf, $1);
   PERF_CFG->from = 10;
   PERF_CFG->to = 20;
   PERF_CFG->repeat = 4;
@@ -43,7 +43,7 @@ perf_proto:
  ;
 
 perf_proto_item:
-   proto_channel { this_proto->net_type = $1->net_type; }
+   proto_channel { ctx->this_proto->net_type = $1->net_type; }
  | EXP FROM NUM { PERF_CFG->from = $3; }
  | EXP TO NUM { PERF_CFG->to = $3; }
  | REPEAT NUM { PERF_CFG->repeat = $2; }

@@ -9,6 +9,7 @@
 
 #include "nest/bird.h"
 #include "conf/conf.h"
+#include "conf/parser.h"
 #include "filter/filter.h"
 #include "filter/f-inst.h"
 #include "lib/idm.h"
@@ -30,14 +31,14 @@ filter_name(const struct filter *filter)
     return filter->sym->name;
 }
 
-struct filter *f_new_where(struct f_inst *where)
+struct filter *f_new_where(struct cf_context *ctx, struct f_inst *where)
 {
-  struct f_inst *cond = f_new_inst(FI_CONDITION, where,
-				   f_new_inst(FI_DIE, F_ACCEPT),
-				   f_new_inst(FI_DIE, F_REJECT));
+  struct f_inst *cond = f_new_inst(ctx, FI_CONDITION, where,
+				   f_new_inst(ctx, FI_DIE, F_ACCEPT),
+				   f_new_inst(ctx, FI_DIE, F_REJECT));
 
   struct filter *f = cfg_allocz(sizeof(struct filter));
-  f->root = f_linearize(cond);
+  f->root = f_linearize(ctx, cond);
   return f;
 }
 
@@ -96,7 +97,7 @@ static struct resclass ca_class = {
 };
 
 struct custom_attribute *
-ca_lookup(pool *p, const char *name, int f_type)
+ca_lookup(struct cf_context *ctx, pool *p, const char *name, int f_type)
 {
   int ea_type;
 

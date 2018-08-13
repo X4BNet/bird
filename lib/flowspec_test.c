@@ -7,6 +7,7 @@
  */
 
 #include "test/birdtest.h"
+#include "test/bt-utils.h"
 #include "lib/flowspec.h"
 
 #define NET_ADDR_FLOW4_(what,prefix,pxlen,data_)	\
@@ -446,10 +447,8 @@ t_validation6(void)
 static int
 t_builder4(void)
 {
-  resource_init();
-
-  struct flow_builder *fb = flow_builder_init(&root_pool);
-  linpool *lp = lp_new_default(&root_pool);
+  struct cf_context *ctx = bt_bird_init();
+  struct flow_builder *fb = flow_builder_init(ctx);
 
   /* Expectation */
 
@@ -492,7 +491,7 @@ t_builder4(void)
   flow_builder_set_type(fb, FLOW_TYPE_TCP_FLAGS);
   flow_builder_add_op_val(fb, 0, 0x55);
 
-  net_addr_flow4 *res = flow_builder4_finalize(fb, lp);
+  net_addr_flow4 *res = flow_builder4_finalize(ctx, fb);
 
   bt_assert(memcmp(res, expect, expect->length) == 0);
 
@@ -521,6 +520,8 @@ t_builder4(void)
 
   bt_assert(memcmp(res, expect, expect->length) == 0);
 
+  bt_bird_cleanup(ctx);
+
   return 1;
 }
 
@@ -529,9 +530,8 @@ t_builder6(void)
 {
   net_addr_ip6 ip;
 
-  resource_init();
-  linpool *lp = lp_new_default(&root_pool);
-  struct flow_builder *fb = flow_builder_init(&root_pool);
+  struct cf_context *ctx = bt_bird_init();
+  struct flow_builder *fb = flow_builder_init(ctx);
   fb->ipv6 = 1;
 
   /* Expectation */
@@ -574,7 +574,7 @@ t_builder6(void)
   flow_builder_set_type(fb, FLOW_TYPE_LABEL);
   flow_builder_add_op_val(fb, 0, 0x55);
 
-  net_addr_flow6 *res = flow_builder6_finalize(fb, lp);
+  net_addr_flow6 *res = flow_builder6_finalize(ctx, fb);
   bt_assert(memcmp(res, expect, expect->length) == 0);
 
   /* Reverse order */
@@ -601,8 +601,10 @@ t_builder6(void)
   flow_builder_set_type(fb, FLOW_TYPE_DST_PREFIX);
   flow_builder6_add_pfx(fb, &ip, 61);
 
-  res = flow_builder6_finalize(fb, lp);
+  res = flow_builder6_finalize(ctx, fb);
   bt_assert(memcmp(res, expect, expect->length) == 0);
+
+  bt_bird_cleanup(ctx);
 
   return 1;
 }

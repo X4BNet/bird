@@ -429,7 +429,7 @@ static_rte_mergable(struct rte_storage *pri, struct rte_storage *sec)
 static void static_index_routes(struct static_config *cf);
 
 static void
-static_postconfig(struct proto_config *CF)
+static_postconfig(struct cf_context *ctx, struct proto_config *CF)
 {
   struct static_config *cf = (void *) CF;
   struct static_route *r;
@@ -703,7 +703,7 @@ static_reconfigure(struct proto *P, struct proto_config *CF)
 }
 
 static void
-static_copy_config(struct proto_config *dest, struct proto_config *src)
+static_copy_config(struct config *new, struct proto_config *dest, struct proto_config *src)
 {
   struct static_config *d = (struct static_config *) dest;
   struct static_config *s = (struct static_config *) src;
@@ -718,7 +718,7 @@ static_copy_config(struct proto_config *dest, struct proto_config *src)
 
     for (snh = srt; snh; snh = snh->mp_next)
     {
-      dnh = cfg_alloc(sizeof(struct static_route));
+      dnh = cf_alloc(new, sizeof(struct static_route));
       memcpy(dnh, snh, sizeof(struct static_route));
       memset(&dnh->n, 0, sizeof(node));
 

@@ -16,16 +16,16 @@ CF_HDR
 
 CF_DEFINES
 
-#define RIP_CFG ((struct rip_config *) this_proto)
-#define RIP_IFACE ((struct rip_iface_config *) this_ipatt)
+#define RIP_CFG ((struct rip_config *) ctx->this_proto)
+#define RIP_IFACE ((struct rip_iface_config *) ctx->this_ipatt)
 
-static inline int rip_cfg_is_v2(void) { return RIP_CFG->rip2; }
-static inline int rip_cfg_is_ng(void) { return ! RIP_CFG->rip2; }
+static inline int rip_cfg_is_v2(struct cf_context *ctx) { return RIP_CFG->rip2; }
+static inline int rip_cfg_is_ng(struct cf_context *ctx) { return ! RIP_CFG->rip2; }
 
 static inline void
-rip_check_auth(void)
+rip_check_auth(struct cf_context *ctx)
 {
-  if (rip_cfg_is_ng())
+  if (rip_cfg_is_ng(ctx))
     cf_error("Authentication not supported in RIPng");
 }
 
@@ -52,8 +52,8 @@ rip_variant:
 
 rip_proto_start: proto_start rip_variant
 {
-  this_proto = proto_config_new(&proto_rip, $1);
-  this_proto->net_type = $2 ? NET_IP4 : NET_IP6;
+  ctx->this_proto = proto_config_new(ctx->new_config, &proto_rip, $1);
+  ctx->this_proto->net_type = $2 ? NET_IP4 : NET_IP6;
 
   init_list(&RIP_CFG->patt_list);
   RIP_CFG->rip2 = $2;
@@ -83,21 +83,21 @@ rip_proto:
 
 rip_iface_start:
 {
-  this_ipatt = cfg_allocz(sizeof(struct rip_iface_config));
-  add_tail(&RIP_CFG->patt_list, NODE this_ipatt);
-  init_list(&this_ipatt->ipn_list);
-  reset_passwords();
+  ctx->this_ipatt = cfg_allocz(sizeof(struct rip_iface_config));
+  add_tail(&RIP_CFG->patt_list, NODE ctx->this_ipatt);
+  init_list(&ctx->this_ipatt->ipn_list);
+  reset_passwords(ctx);
 
   RIP_IFACE->metric = 1;
-  RIP_IFACE->port = rip_cfg_is_v2() ? RIP_PORT : RIP_NG_PORT;
-  RIP_IFACE->version = rip_cfg_is_v2() ? RIP_V2 : RIP_V1;
+  RIP_IFACE->port = rip_cfg_is_v2(ctx) ? RIP_PORT : RIP_NG_PORT;
+  RIP_IFACE->version = rip_cfg_is_v2(ctx) ? RIP_V2 : RIP_V1;
   RIP_IFACE->split_horizon = 1;
   RIP_IFACE->poison_reverse = 1;
   RIP_IFACE->check_zero = 1;
   RIP_IFACE->check_link = 1;
-  RIP_IFACE->ttl_security = rip_cfg_is_v2() ? 0 : 1;
-  RIP_IFACE->rx_buffer = rip_cfg_is_v2() ? RIP_MAX_PKT_LENGTH : 0;
-  RIP_IFACE->tx_length = rip_cfg_is_v2() ? RIP_MAX_PKT_LENGTH : 0;
+  RIP_IFACE->ttl_security = rip_cfg_is_v2(ctx) ? 0 : 1;
+  RIP_IFACE->rx_buffer = rip_cfg_is_v2(ctx) ? RIP_MAX_PKT_LENGTH : 0;
+  RIP_IFACE->tx_length = rip_cfg_is_v2(ctx) ? RIP_MAX_PKT_LENGTH : 0;
   RIP_IFACE->tx_tos = IP_PREC_INTERNET_CONTROL;
   RIP_IFACE->tx_priority = sk_priority_control;
   RIP_IFACE->update_time = RIP_DEFAULT_UPDATE_TIME;
@@ -110,10 +110,10 @@ rip_iface_finish:
 {
   /* Default mode is broadcast for RIPv1, multicast for RIPv2 and RIPng */
   if (!RIP_IFACE->mode)
-    RIP_IFACE->mode = (rip_cfg_is_v2() && (RIP_IFACE->version == RIP_V1)) ?
+    RIP_IFACE->mode = (rip_cfg_is_v2(ctx) && (RIP_IFACE->version == RIP_V1)) ?
       RIP_IM_BROADCAST : RIP_IM_MULTICAST;
 
-  RIP_IFACE->passwords = get_passwords();
+  RIP_IFACE->passwords = get_passwords(ctx);
 
   if (!RIP_IFACE->auth_type != !RIP_IFACE->passwords)
     log(L_WARN "Authentication and password options should be used together");
@@ -139,12 +139,12 @@ rip_iface_finish:
 rip_iface_item:
    METRIC expr		{ RIP_IFACE->metric = $2; if (($2<1) || ($2>255)) cf_error("Metric must be in range 1-255"); }
  | MODE MULTICAST	{ RIP_IFACE->mode = RIP_IM_MULTICAST; }
- | MODE BROADCAST	{ RIP_IFACE->mode = RIP_IM_BROADCAST; if (rip_cfg_is_ng()) cf_error("Broadcast not supported in RIPng"); }
+ | MODE BROADCAST	{ RIP_IFACE->mode = RIP_IM_BROADCAST; if (rip_cfg_is_ng(ctx)) cf_error("Broadcast not supported in RIPng"); }
  | PASSIVE bool		{ RIP_IFACE->passive = $2; }
- | ADDRESS ipa		{ RIP_IFACE->address = $2; if (ipa_is_ip4($2) != rip_cfg_is_v2()) cf_error("IP address version mismatch"); }
+ | ADDRESS ipa		{ RIP_IFACE->address = $2; if (ipa_is_ip4($2) != rip_cfg_is_v2(ctx)) cf_error("IP address version mismatch"); }
  | PORT expr		{ RIP_IFACE->port = $2; if (($2<1) || ($2>65535)) cf_error("Invalid port number"); }
  | VERSION expr		{ RIP_IFACE->version = $2;
-			  if (rip_cfg_is_ng()) cf_error("Version not supported in RIPng");
+			  if (rip_cfg_is_ng(ctx)) cf_error("Version not supported in RIPng");
 			  if (($2 != RIP_V1) && ($2 != RIP_V2)) cf_error("Unsupported version");
 			}
  | VERSION ONLY bool	{ RIP_IFACE->version_only = $3; }
@@ -164,9 +164,9 @@ rip_iface_item:
  | TTL SECURITY bool	{ RIP_IFACE->ttl_security = $3; }
  | TTL SECURITY TX ONLY	{ RIP_IFACE->ttl_security = 2; }
  | CHECK LINK bool	{ RIP_IFACE->check_link = $3; }
- | BFD bool		{ RIP_IFACE->bfd = $2; cf_check_bfd($2); }
- | AUTHENTICATION rip_auth { RIP_IFACE->auth_type = $2; if ($2) rip_check_auth(); }
- | password_list	{ rip_check_auth(); }
+ | BFD bool		{ RIP_IFACE->bfd = $2; BFD_CHECK($2); }
+ | AUTHENTICATION rip_auth { RIP_IFACE->auth_type = $2; if ($2) rip_check_auth(ctx); }
+ | password_list	{ rip_check_auth(ctx); }
 ;
 
 rip_auth:

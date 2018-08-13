@@ -12,21 +12,60 @@ CF_HDR
 
 CF_DEFINES
 
-#define RPKI_CFG ((struct rpki_config *) this_proto)
+#define RPKI_CFG ((struct rpki_config *) ctx->this_proto)
 #define RPKI_TR_SSH_CFG ((struct rpki_tr_ssh_config *) RPKI_CFG->tr_config.spec)
 
 static void
-rpki_check_unused_hostname(void)
+rpki_check_unused_hostname(struct cf_context *ctx)
 {
   if (RPKI_CFG->hostname != NULL)
     cf_error("Only one cache server per protocol allowed");
 }
 
 static void
-rpki_check_unused_transport(void)
+rpki_check_unused_transport(struct cf_context *ctx)
 {
   if (RPKI_CFG->tr_config.spec != NULL)
     cf_error("At the most one transport per protocol allowed");
+}
+
+/**
+ * rpki_check_config - check and complete configuration of RPKI protocol
+ * @cf: RPKI configuration
+ *
+ * This function is called at the end of parsing RPKI protocol configuration.
+ */
+static void
+rpki_check_config(struct cf_context *ctx, struct rpki_config *cf)
+{
+  /* Do not check templates at all */
+  if (cf->c.class == SYM_TEMPLATE)
+    return;
+
+  if (ipa_zero(cf->ip) && cf->hostname == NULL)
+    cf_error("IP address or hostname of cache server must be set");
+
+  /* Set default transport type */
+  if (cf->tr_config.spec == NULL)
+  {
+    cf->tr_config.spec = cfg_allocz(sizeof(struct rpki_tr_tcp_config));
+    cf->tr_config.type = RPKI_TR_TCP;
+  }
+
+  if (cf->port == 0)
+  {
+    /* Set default port numbers */
+    switch (cf->tr_config.type)
+    {
+#if HAVE_LIBSSH
+    case RPKI_TR_SSH:
+      cf->port = RPKI_SSH_PORT;
+      break;
+#endif
+    default:
+      cf->port = RPKI_TCP_PORT;
+    }
+  }
 }
 
 CF_DECLS
@@ -41,13 +80,13 @@ CF_GRAMMAR
 proto: rpki_proto ;
 
 rpki_proto_start: proto_start RPKI {
-  this_proto = proto_config_new(&proto_rpki, $1);
+  ctx->this_proto = proto_config_new(ctx->new_config, &proto_rpki, $1);
   RPKI_CFG->retry_interval = RPKI_RETRY_INTERVAL;
   RPKI_CFG->refresh_interval = RPKI_REFRESH_INTERVAL;
   RPKI_CFG->expire_interval = RPKI_EXPIRE_INTERVAL;
 };
 
-rpki_proto: rpki_proto_start proto_name '{' rpki_proto_opts '}' { rpki_check_config(RPKI_CFG); };
+rpki_proto: rpki_proto_start proto_name '{' rpki_proto_opts '}' { rpki_check_config(ctx, RPKI_CFG); };
 
 rpki_proto_opts:
    /* empty */
@@ -87,15 +126,15 @@ rpki_keep_interval:
  | KEEP { $$ = 1; }
  ;
 
-rpki_proto_item_port: PORT expr { check_u16($2); RPKI_CFG->port = $2; };
+rpki_proto_item_port: PORT expr { check_u16(ctx, $2); RPKI_CFG->port = $2; };
 
 rpki_cache_addr:
    text {
-     rpki_check_unused_hostname();
+     rpki_check_unused_hostname(ctx);
      RPKI_CFG->hostname = $1;
    }
  | ipa {
-     rpki_check_unused_hostname();
+     rpki_check_unused_hostname(ctx);
      RPKI_CFG->ip = $1;
      /* Ensure hostname is filled */
      char *hostname = cfg_allocz(INET6_ADDRSTRLEN + 1);
@@ -111,7 +150,7 @@ rpki_transport:
 
 rpki_transport_tcp_init:
 {
-  rpki_check_unused_transport();
+  rpki_check_unused_transport(ctx);
   RPKI_CFG->tr_config.spec = cfg_allocz(sizeof(struct rpki_tr_tcp_config));
   RPKI_CFG->tr_config.type = RPKI_TR_TCP;
 };
@@ -119,7 +158,7 @@ rpki_transport_tcp_init:
 rpki_transport_ssh_init:
 {
 #if HAVE_LIBSSH
-  rpki_check_unused_transport();
+  rpki_check_unused_transport(ctx);
   RPKI_CFG->tr_config.spec = cfg_allocz(sizeof(struct rpki_tr_ssh_config));
   RPKI_CFG->tr_config.type = RPKI_TR_SSH;
 #else

@@ -79,7 +79,7 @@ dirs := client conf doc filter lib nest test $(addprefix proto/,$(protocols)) @s
 
 # conf/Makefile declarations needed for all other modules
 conf-lex-targets := $(addprefix $(objdir)/conf/,cf-lex.o)
-conf-y-targets := $(addprefix $(objdir)/conf/,cf-parse.y keywords.h commands.h)
+conf-y-targets := $(addprefix $(objdir)/conf/,cf-parse.y keywords.h commands.h context.h)
 cf-local = $(conf-y-targets): $(s)config.Y
 
 src-o-files = $(patsubst %.c,$(o)%.o,$(src))
@@ -194,10 +194,10 @@ static-scan:
 	$(Q)scan-build $(STATIC_SCAN_FLAGS) $(MAKE) -$(MAKEFLAGS)
 
 tags:
-	cd $(srcdir) ; etags -lc `find $(dirs) -name '*.[chY]'`
+	cd $(srcdir) ; etags -lc `find $(dirs) -name '*.[chYl]'`
 
 cscope:
-	cd $(srcdir) ; find $(dirs) -name '*.[chY]' > cscope.files ; cscope -b
+	cd $(srcdir) ; find $(dirs) -name '*.[chYl]' > cscope.files ; cscope -b
 
 # Install
 
