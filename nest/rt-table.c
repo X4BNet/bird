@@ -425,19 +425,22 @@ export_filter_(struct channel *c, struct rte *rt, linpool *pool, int silent)
   struct proto *p = c->proto;
   const struct filter *filter = c->out_filter;
   struct proto_stats *stats = &c->stats;
-  int v;
 
+  /* Do nothing if we have already rejected the route */
+  if (silent && bmap_test(&c->export_reject_map, rt->id))
+    goto reject_noset;
 
-  v = p->preexport ? p->preexport(c, rt) : 0;
+  int v = p->preexport ? p->preexport(c, rt) : 0;
   if (v < 0)
     {
       if (silent)
-	goto reject;
+	goto reject_noset;
 
       stats->exp_updates_rejected++;
       if (v == RIC_REJECT)
 	rte_trace_out(D_FILTERS, c, rt, "rejected by protocol");
-      goto reject;
+      goto reject_noset;
+
     }
   if (v > 0)
     {
@@ -460,9 +463,16 @@ export_filter_(struct channel *c, struct rte *rt, linpool *pool, int silent)
     }
 
  accept:
+  /* We have accepted the route */
+  bmap_clear(&c->export_reject_map, rt->id);
   return;
 
  reject:
+  /* We have rejected the route by filter */
+  bmap_set(&c->export_reject_map, rt->id);
+
+reject_noset:
+  /* Invalidate the route */
   rt->attrs = NULL;
   return;
 }
@@ -626,6 +636,10 @@ rt_notify_accepted(struct channel *c, net *net, struct rte_storage *new_changed,
     /* Feed or old_best changed -> find first accepted by filters */
     for (struct rte_storage *r = net->routes; rte_is_valid(r); r = r->next)
     {
+      /* Already rejected before */
+      if (!refeed && bmap_test(&c->export_reject_map, r->id))
+	continue;
+
       new_best = rte_copy(r);
       export_filter(c, &new_best, 0);
       if (new_best.attrs)
@@ -747,7 +761,6 @@ rt_notify_merged(struct channel *c, net *net, struct rte_storage *new_changed, s
 /**
  * rte_announce - announce a routing table change
  * @tab: table the route has been added to
- * @type: type of route announcement (RA_UNDEF or RA_ANY)
  * @net: network in question
  * @new: the new or changed route
  * @old: the previous route replaced by the new one
@@ -763,13 +776,6 @@ rt_notify_merged(struct channel *c, net *net, struct rte_storage *new_changed, s
  * and @new_best and @old_best describes best routes. Other routes are not
  * affected, but in sorted table the order of other routes might change.
  *
- * Second, There is a bulk change of multiple routes in @net, with shared best
- * route selection. In such case separate route changes are described using
- * @type of %RA_ANY, with @new and @old specifying the changed route, while
- * @new_best and @old_best are NULL. After that, another notification is done
- * where @new_best and @old_best are filled (may be the same), but @new and @old
- * are NULL.
- *
  * The function announces the change to all associated channels. For each
  * channel, an appropriate preprocessing is done according to channel &ra_mode.
  * For example, %RA_OPTIMAL channels receive just changes of best routes.
@@ -784,7 +790,7 @@ rt_notify_merged(struct channel *c, net *net, struct rte_storage *new_changed, s
  * done outside of scope of rte_announce().
  */
 static void
-rte_announce(rtable *tab, uint type, net *net, struct rte_storage *new, struct rte_storage *old,
+rte_announce(rtable *tab, net *net, struct rte_storage *new, struct rte_storage *old,
 	     struct rte_storage *new_best, struct rte_storage *old_best)
 {
   if (!rte_is_valid(new))
@@ -821,9 +827,6 @@ rte_announce(rtable *tab, uint type, net *net, struct rte_storage *new, struct r
     if (c->export_state == ES_DOWN)
       continue;
 
-    if (type && (type != c->ra_mode))
-      continue;
-
     switch (c->ra_mode)
     {
     case RA_OPTIMAL:
@@ -844,6 +847,11 @@ rte_announce(rtable *tab, uint type, net *net, struct rte_storage *new, struct r
       rt_notify_merged(c, net, new, old, new_best, old_best, 0);
       break;
     }
+
+    /* Drop the old stored rejection if applicable.
+     * new->id == old->id happens when updating hostentries. */
+    if (old && (!new || (new->id != old->id)))
+      bmap_clear(&c->export_reject_map, old->id);
   }
 }
 
@@ -1122,7 +1130,7 @@ rte_recalculate(struct channel *c, net *net, rte *new, _Bool filtered)
     }
 
   /* Propagate the route change */
-  rte_announce(table, RA_UNDEF, net, new_stored, old, net->routes, old_best);
+  rte_announce(table, net, new_stored, old, net->routes, old_best);
 
   if (!net->routes &&
       (table->gc_counter++ >= table->config->gc_max_ops) &&
@@ -1285,12 +1293,12 @@ rte_update2(struct channel *c, rte *new)
 /* Independent call to rte_announce(), used from next hop
    recalculation, outside of rte_update(). new must be non-NULL */
 static inline void
-rte_announce_i(rtable *tab, uint type, net *net,
+rte_announce_i(rtable *tab, net *net,
     struct rte_storage *new, struct rte_storage *old,
     struct rte_storage *new_best, struct rte_storage *old_best)
 {
   rte_update_lock();
-  rte_announce(tab, type, net, new, old, new_best, old_best);
+  rte_announce(tab, net, new, old, new_best, old_best);
   rte_update_unlock();
 }
 
@@ -2006,7 +2014,7 @@ rt_next_hop_update_net(rtable *tab, net *n)
     const char *best_indicator[2][2] = { { "updated", "updated [-best]" }, { "updated [+best]", "updated [best]" } };
     rte nloc = rte_copy(updates[i].new);
     rte_trace_in(D_ROUTES, new->sender, &nloc, best_indicator[nb][ob]);
-    rte_announce_i(tab, RA_UNDEF, n, updates[i].new, updates[i].old, new, old_best);
+    rte_announce_i(tab, n, updates[i].new, updates[i].old, new, old_best);
   }
 
   for (int i=0; i<count; i++)
