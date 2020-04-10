@@ -77,13 +77,12 @@ pipe_rt_notify(struct proto *P, struct channel *src_ch, net *n, rte *new, rte *o
 
       e->attrs = rta_lookup(a);
       e->pflags = 0;
-
-      src = a->src;
+      e->src = new->src;
     }
   else
     {
       e = NULL;
-      src = old->attrs->src;
+      src = old->src;
     }
 
   src_ch->table->pipe_busy = 1;

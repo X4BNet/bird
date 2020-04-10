@@ -276,7 +276,7 @@ rte_find(net *net, struct rte_src *src)
 {
   rte *e = net->routes;
 
-  while (e && e->attrs->src != src)
+  while (e && e->src != src)
     e = e->next;
   return e;
 }
@@ -289,6 +289,7 @@ rte_do_cow(rte *r)
   memcpy(e, r, sizeof(rte));
   e->attrs = rta_clone(r->attrs);
   e->flags = 0;
+  rt_lock_source(e->src);
   return e;
 }
 
@@ -297,6 +298,8 @@ rte_store(rte *r)
 {
   rte *e = sl_alloc(rte_slab);
   memcpy(e, r, sizeof(rte));
+
+  rt_lock_source(e->src);
   if (e->attrs->cached)
     e->attrs = rta_clone(r->attrs);
   else
@@ -345,6 +348,7 @@ rte_cow_rta(rte *r, linpool *lp)
 void
 rte_free(rte *e)
 {
+  rt_unlock_source(e->src);
   if (rta_is_cached(e->attrs))
     rta_free(e->attrs);
   sl_free(rte_slab, e);
@@ -353,6 +357,7 @@ rte_free(rte *e)
 static inline void
 rte_free_quick(rte *e)
 {
+  rt_unlock_source(e->src);
   rta_free(e->attrs);
   sl_free(rte_slab, e);
 }
@@ -371,16 +376,16 @@ rte_better(rte *new, rte *old)
     return 1;
   if (new->attrs->pref < old->attrs->pref)
     return 0;
-  if (new->attrs->src->proto->proto != old->attrs->src->proto->proto)
+  if (new->src->proto->proto != old->src->proto->proto)
     {
       /*
        *  If the user has configured protocol preferences, so that two different protocols
        *  have the same preference, try to break the tie by comparing addresses. Not too
        *  useful, but keeps the ordering of routes unambiguous.
        */
-      return new->attrs->src->proto->proto > old->attrs->src->proto->proto;
+      return new->src->proto->proto > old->src->proto->proto;
     }
-  if (better = new->attrs->src->proto->rte_better)
+  if (better = new->src->proto->rte_better)
     return better(new, old);
   return 0;
 }
@@ -396,10 +401,10 @@ rte_mergable(rte *pri, rte *sec)
   if (pri->attrs->pref != sec->attrs->pref)
     return 0;
 
-  if (pri->attrs->src->proto->proto != sec->attrs->src->proto->proto)
+  if (pri->src->proto->proto != sec->src->proto->proto)
     return 0;
 
-  if (mergable = pri->attrs->src->proto->rte_mergable)
+  if (mergable = pri->src->proto->rte_mergable)
     return mergable(pri, sec);
 
   return 0;
@@ -512,7 +517,7 @@ do_rt_notify(struct channel *c, net *net, rte *new, rte *old, int refeed)
     }
   }
 
-  struct rte_src *src = old ? old->attrs->src : new->attrs->src;
+  struct rte_src *src = old ? old->src : new->src;
 
   /* Apply export table */
   struct rte *old_exported = NULL;
@@ -933,7 +938,7 @@ rte_recalculate(struct channel *c, net *net, rte *new, struct rte_src *src)
   k = &net->routes;			/* Find and remove original route from the same protocol */
   while (old = *k)
     {
-      if (old->attrs->src == src)
+      if (old->src == src)
 	{
 	  /* If there is the same route in the routing table but from
 	   * a different sender, then there are two paths from the
@@ -1311,8 +1316,9 @@ static int rte_update_in(struct channel *c, const net_addr *n, rte *new, struct 
 void
 rte_withdraw(struct channel *c, const net_addr *n, struct rte_src *src)
 {
+  ASSERT(src);
   if (!c->in_table || rte_update_in(c, n, NULL, src))
-    rte_update2(c, n, NULL, src ?: c->proto->main_source);
+    rte_update2(c, n, NULL, src);
 }
 
 void
@@ -1320,7 +1326,7 @@ rte_update(struct channel *c, const net_addr *n, struct rte *new)
 {
   ASSERT(new);
   ASSERT(new->attrs);
-  ASSERT(new->attrs->src);
+  ASSERT(new->src);
 
   if (!new->attrs->pref)
   {
@@ -1331,8 +1337,10 @@ rte_update(struct channel *c, const net_addr *n, struct rte *new)
   rte *e = sl_alloc(rte_slab);
   *e = *new;
 
-  if (!c->in_table || rte_update_in(c, n, e, e->attrs->src))
-    rte_update2(c, n, e, e->attrs->src);
+  rt_lock_source(e->src);
+
+  if (!c->in_table || rte_update_in(c, n, e, e->src))
+    rte_update2(c, n, e, e->src);
 }
 
 /* Independent call to rte_announce(), used from next hop
@@ -1350,7 +1358,7 @@ static inline void
 rte_discard(rte *old)	/* Non-filtered route deletion, used during garbage collection */
 {
   rte_update_lock();
-  rte_recalculate(old->sender, old->net, NULL, old->attrs->src);
+  rte_recalculate(old->sender, old->net, NULL, old->src);
   rte_update_unlock();
 }
 
@@ -1370,7 +1378,7 @@ rte_modify(rte *old)
       new->flags = (old->flags & ~REF_MODIFY) | REF_COW;
     }
 
-    rte_recalculate(old->sender, old->net, new, old->attrs->src);
+    rte_recalculate(old->sender, old->net, new, old->src);
   }
 
   rte_update_unlock();
@@ -2006,6 +2014,7 @@ rt_next_hop_update_rte(rtable *tab UNUSED, rte *old)
   rte *e = sl_alloc(rte_slab);
   memcpy(e, old, sizeof(rte));
   e->attrs = rta_lookup(a);
+  rt_lock_source(e->src);
 
   return e;
 }
@@ -2032,8 +2041,8 @@ rt_next_hop_update_net(rtable *tab, net *n)
 
 	/* Call a pre-comparison hook */
 	/* Not really an efficient way to compute this */
-	if (e->attrs->src->proto->rte_recalculate)
-	  e->attrs->src->proto->rte_recalculate(tab, n, new, e, NULL);
+	if (e->src->proto->rte_recalculate)
+	  e->src->proto->rte_recalculate(tab, n, new, e, NULL);
 
 	if (e != old_best)
 	  rte_free_quick(e);
@@ -2368,7 +2377,7 @@ rte_update_in(struct channel *c, const net_addr *n, rte *new, struct rte_src *sr
 
   /* Find the old rte */
   for (pos = &net->routes; old = *pos; pos = &old->next)
-    if (old->attrs->src == src)
+    if (old->src == src)
     {
       if (new && rte_same(old, new))
       {
@@ -2473,7 +2482,7 @@ rt_reload_channel(struct channel *c)
 	return 0;
       }
 
-      rte_update2(c, e->net->n.addr, rte_do_cow(e), e->attrs->src);
+      rte_update2(c, e->net->n.addr, rte_do_cow(e), e->src);
     }
 
     c->reload_next_rte = NULL;
@@ -2569,7 +2578,7 @@ rte_update_out(struct channel *c, const net_addr *n, struct rte_src *src, rte *n
 
   /* Find the old rte */
   for (pos = &net->routes; old = *pos; pos = &old->next)
-    if ((c->ra_mode != RA_ANY) || (old->attrs->src == src))
+    if ((c->ra_mode != RA_ANY) || (old->src == src))
     {
       if (new && rte_same(old, new))
       {
