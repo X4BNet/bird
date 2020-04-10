@@ -48,14 +48,10 @@
 #include "pipe.h"
 
 static void
-pipe_rt_notify(struct proto *P, struct channel *src_ch, net *n, rte *new, rte *old)
+pipe_rt_notify(struct proto *P, struct channel *src_ch, const net_addr *n, rte *new, const struct rte_storage *old)
 {
   struct pipe_proto *p = (void *) P;
   struct channel *dst = (src_ch == p->pri) ? p->sec : p->pri;
-  struct rte_src *src;
-
-  rte e0 = {}, *e = &e0;
-  rta *a;
 
   if (!new && !old)
     return;
@@ -63,43 +59,49 @@ pipe_rt_notify(struct proto *P, struct channel *src_ch, net *n, rte *new, rte *o
   if (dst->table->pipe_busy)
     {
       log(L_ERR "Pipe loop detected when sending %N to table %s",
-	  n->n.addr, dst->table->name);
+	  n, dst->table->name);
       return;
     }
 
   if (new)
     {
-      a = alloca(rta_size(new->attrs));
+      rta *a = alloca(rta_size(new->attrs));
       memcpy(a, new->attrs, rta_size(new->attrs));
 
       a->cached = 0;
+      a->uc = 0;
       a->hostentry = NULL;
 
-      e->attrs = rta_lookup(a);
-      e->pflags = 0;
-      e->src = new->src;
+      rte e0 = {
+	.attrs = a,
+	.src = new->src,
+	.net = n,
+      };
+
+      src_ch->table->pipe_busy = 1;
+      rte_update(dst, &e0);
+      src_ch->table->pipe_busy = 0;
     }
   else
     {
-      e = NULL;
-      src = old->src;
+      src_ch->table->pipe_busy = 1;
+      rte_withdraw(dst, n, old->src);
+      src_ch->table->pipe_busy = 0;
     }
-
-  src_ch->table->pipe_busy = 1;
-  if (e)
-    rte_update(dst, n->n.addr, e);
-  else
-    rte_withdraw(dst, n->n.addr, src);
-  src_ch->table->pipe_busy = 0;
 }
 
 static int
-pipe_preexport(struct proto *P, rte *e)
+pipe_preexport(struct channel *src_ch, struct rte *e)
 {
-  struct proto *pp = e->sender->proto;
+  if (src_ch == e->sender)
+    return -1;
 
-  if (pp == P)
-    return -1;	/* Avoid local loops automatically */
+  struct pipe_proto *p = (void *) src_ch->proto;
+  struct channel *dst = (src_ch == p->pri) ? p->sec : p->pri;
+
+  /* Avoid pipe loops */
+  if (dst->table->pipe_busy)
+    return -1;
 
   return 0;
 }

@@ -677,12 +677,13 @@ babel_announce_rte(struct babel_proto *p, struct babel_entry *e)
       a0.nh.flags = RNF_ONLINK;
 
     rte e0 = {
+      .net = e->n.addr,
       .src = p->p.main_source,
       .attrs = &a0,
     };
 
     e->unreachable = 0;
-    rte_update(c, e->n.addr, &e0);
+    rte_update(c, &e0);
   }
   else if (e->valid && (e->router_id != p->router_id))
   {
@@ -695,12 +696,13 @@ babel_announce_rte(struct babel_proto *p, struct babel_entry *e)
     };
 
     rte e0 = {
+      .net = e->n.addr,
       .src = p->p.main_source,
       .attrs = &a0,
     };
 
     e->unreachable = 1;
-    rte_update(c, e->n.addr, &e0);
+    rte_update(c, &e0);
   }
   else
   {
@@ -1889,12 +1891,12 @@ babel_dump(struct proto *P)
 }
 
 static void
-babel_get_route_info(rte *rte, byte *buf)
+babel_get_route_info(struct rte *e, struct rte_storage *er UNUSED, byte *buf)
 {
   u64 rid;
-  memcpy(&rid, ea_find(rte->attrs->eattrs, EA_BABEL_ROUTER_ID)->u.ptr->data, sizeof(u64));
-  buf += bsprintf(buf, " (%d/%d) [%lR]", rte->attrs->pref,
-      ea_find(rte->attrs->eattrs, EA_BABEL_METRIC)->u.data, rid);
+  memcpy(&rid, ea_find(e->attrs->eattrs, EA_BABEL_ROUTER_ID)->u.ptr->data, sizeof(u64));
+  buf += bsprintf(buf, " (%d/%d) [%lR]", e->attrs->pref,
+      ea_find(e->attrs->eattrs, EA_BABEL_METRIC)->u.data, rid);
 }
 
 static int
@@ -2116,10 +2118,10 @@ babel_kick_timer(struct babel_proto *p)
 
 
 static int
-babel_preexport(struct proto *P, struct rte *new)
+babel_preexport(struct channel *c, struct rte *new)
 {
   /* Reject our own unreachable routes */
-  if ((new->attrs->dest == RTD_UNREACHABLE) && (new->src->proto == P))
+  if ((new->attrs->dest == RTD_UNREACHABLE) && (new->src->proto == c->proto))
     return -1;
 
   return 0;
@@ -2130,8 +2132,8 @@ babel_preexport(struct proto *P, struct rte *new)
  * so store it into our data structures.
  */
 static void
-babel_rt_notify(struct proto *P, struct channel *c UNUSED, struct network *net,
-		struct rte *new, struct rte *old UNUSED)
+babel_rt_notify(struct proto *P, struct channel *c UNUSED, const net_addr *net,
+		struct rte *new, const struct rte_storage *old UNUSED)
 {
   struct babel_proto *p = (void *) P;
   struct babel_entry *e;
@@ -2157,11 +2159,11 @@ babel_rt_notify(struct proto *P, struct channel *c UNUSED, struct network *net,
     if (rt_metric > BABEL_INFINITY)
     {
       log(L_WARN "%s: Invalid babel_metric value %u for route %N",
-	  p->p.name, rt_metric, net->n.addr);
+	  p->p.name, rt_metric, net);
       rt_metric = BABEL_INFINITY;
     }
 
-    e = babel_get_entry(p, net->n.addr);
+    e = babel_get_entry(p, net);
 
     /* Activate triggered updates */
     if ((e->valid != BABEL_ENTRY_VALID) ||
@@ -2179,7 +2181,7 @@ babel_rt_notify(struct proto *P, struct channel *c UNUSED, struct network *net,
   else
   {
     /* Withdraw */
-    e = babel_find_entry(p, net->n.addr);
+    e = babel_find_entry(p, net);
 
     if (!e || e->valid != BABEL_ENTRY_VALID)
       return;
@@ -2193,7 +2195,7 @@ babel_rt_notify(struct proto *P, struct channel *c UNUSED, struct network *net,
 }
 
 static int
-babel_rte_better(struct rte *new, struct rte *old)
+babel_rte_better(struct rte_storage *new, struct rte_storage *old)
 {
   uint new_metric = ea_find(new->attrs->eattrs, EA_BABEL_SEQNO)->u.data;
   uint old_metric = ea_find(old->attrs->eattrs, EA_BABEL_SEQNO)->u.data;

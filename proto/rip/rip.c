@@ -210,9 +210,10 @@ rip_announce_rte(struct rip_proto *p, struct rip_entry *en)
     rte e0 = {
       .attrs = &a0,
       .src = p->p.main_source,
+      .net = en->n.addr, 
     };
 
-    rte_update(p->p.main_channel, en->n.addr, &e0);
+    rte_update(p->p.main_channel, &e0);
   }
   else
     rte_withdraw(p->p.main_channel, en->n.addr, p->p.main_source);
@@ -310,8 +311,8 @@ rip_withdraw_rte(struct rip_proto *p, net_addr *n, struct rip_neighbor *from)
  * it into our data structures.
  */
 static void
-rip_rt_notify(struct proto *P, struct channel *ch UNUSED, struct network *net, struct rte *new,
-	      struct rte *old UNUSED)
+rip_rt_notify(struct proto *P, struct channel *ch UNUSED, const net_addr *net, struct rte *new,
+	      const struct rte_storage *old UNUSED)
 {
   struct rip_proto *p = (struct rip_proto *) P;
   struct rip_entry *en;
@@ -327,14 +328,14 @@ rip_rt_notify(struct proto *P, struct channel *ch UNUSED, struct network *net, s
     if (rt_metric > p->infinity)
     {
       log(L_WARN "%s: Invalid rip_metric value %u for route %N",
-	  p->p.name, rt_metric, net->n.addr);
+	  p->p.name, rt_metric, net);
       rt_metric = p->infinity;
     }
 
     if (rt_tag > 0xffff)
     {
       log(L_WARN "%s: Invalid rip_tag value %u for route %N",
-	  p->p.name, rt_tag, net->n.addr);
+	  p->p.name, rt_tag, net);
       rt_metric = p->infinity;
       rt_tag = 0;
     }
@@ -346,7 +347,7 @@ rip_rt_notify(struct proto *P, struct channel *ch UNUSED, struct network *net, s
      * collection.
      */
 
-    en = fib_get(&p->rtable, net->n.addr);
+    en = fib_get(&p->rtable, net);
 
     old_metric = en->valid ? en->metric : -1;
 
@@ -360,7 +361,7 @@ rip_rt_notify(struct proto *P, struct channel *ch UNUSED, struct network *net, s
   else
   {
     /* Withdraw */
-    en = fib_find(&p->rtable, net->n.addr);
+    en = fib_find(&p->rtable, net);
 
     if (!en || en->valid != RIP_ENTRY_VALID)
       return;
@@ -1083,7 +1084,7 @@ rip_reload_routes(struct channel *C)
 }
 
 static int
-rip_rte_better(struct rte *new, struct rte *old)
+rip_rte_better(struct rte_storage *new, struct rte_storage *old)
 {
   u32 new_metric = ea_get_int(new->attrs->eattrs, EA_RIP_METRIC, 1);
   u32 old_metric = ea_get_int(old->attrs->eattrs, EA_RIP_METRIC, 1);
@@ -1185,7 +1186,7 @@ rip_reconfigure(struct proto *P, struct proto_config *CF)
 }
 
 static void
-rip_get_route_info(rte *rte, byte *buf)
+rip_get_route_info(rte *rte, struct rte_storage *er UNUSED, byte *buf)
 {
   u32 rt_metric = ea_get_int(rte->attrs->eattrs, EA_RIP_METRIC, 1);
   u32 rt_tag = ea_get_int(rte->attrs->eattrs, EA_RIP_TAG, 0);
