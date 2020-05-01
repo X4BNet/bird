@@ -56,13 +56,6 @@ pipe_rt_notify(struct proto *P, struct channel *src_ch, const net_addr *n, rte *
   if (!new && !old)
     return;
 
-  if (dst->table->pipe_busy)
-    {
-      log(L_ERR "Pipe loop detected when sending %N to table %s",
-	  n, dst->table->name);
-      return;
-    }
-
   if (new)
     {
       rta *a = alloca(rta_size(new->attrs));
@@ -76,32 +69,36 @@ pipe_rt_notify(struct proto *P, struct channel *src_ch, const net_addr *n, rte *
 	.attrs = a,
 	.src = new->src,
 	.net = n,
+	.generation = new->generation + 1,
       };
 
-      src_ch->table->pipe_busy = 1;
       rte_update(dst, &e0);
-      src_ch->table->pipe_busy = 0;
     }
   else
-    {
-      src_ch->table->pipe_busy = 1;
-      rte_withdraw(dst, n, old->src);
-      src_ch->table->pipe_busy = 0;
-    }
+    rte_withdraw(dst, n, old->src);
 }
 
 static int
 pipe_preexport(struct channel *src_ch, struct rte *e)
 {
+  struct pipe_proto *p = (void *) src_ch->proto;
+
+  /* Avoid direct loopbacks */
   if (src_ch == e->sender)
     return -1;
 
-  struct pipe_proto *p = (void *) src_ch->proto;
-  struct channel *dst = (src_ch == p->pri) ? p->sec : p->pri;
+  /* Indirection check */
+  uint max_generation = ((struct pipe_config *) p->p.cf)->max_generation;
+  if (e->generation >= max_generation)
+  {
+    log_rl(&rl_pipe, L_ERR "Route overpiped (%u hops of %u configured in %s) in table %s: %N %s/%u:%u",
+	e->generation, max_generation, src_ch->proto->name,
+	src_ch->table->name, e->net, e->src->proto->name, e->src->private_id, e->src->global_id);
 
-  /* Avoid pipe loops */
-  if (dst->table->pipe_busy)
+    if (config->pipe_debug)
+      e->sender->proto->rte_track(e->sender, e->net, e->src);
     return -1;
+  }
 
   return 0;
 }
@@ -115,6 +112,31 @@ pipe_reload_routes(struct channel *C)
   channel_request_feeding((C == p->pri) ? p->sec : p->pri);
 }
 
+static void
+pipe_rte_track(struct channel *C, const net_addr *n, struct rte_src *src)
+{
+  struct pipe_proto *p = (void *) C->proto;
+  struct channel *src_ch = (C == p->pri) ? p->sec : p->pri;
+
+  net *nn = net_find(src_ch->table, n);
+  struct rte_storage *e = nn ? rte_find(nn, src) : NULL;
+
+  log_rl(&rl_pipe, L_TRACE "[route trace] Piped by protocol %s from table %s to table %s: %N %s/%u:%u",
+      p->p.name, src_ch->table->name, C->table->name, n, src->proto->name, src->private_id, src->global_id);
+
+  if (!e)
+  {
+    log_rl(&rl_pipe, L_ERR "[route trace] Couldn't find parent route in table %s: %N %s/%u:%u", src_ch->table->name,
+	n, src->proto->name, src->private_id, src->global_id);
+    return;
+  }
+  else if (!e->generation)
+    log_rl(&rl_pipe, L_TRACE "[route trace] Authored by channel %s.%s in table %s: %N %s/%u:%u",
+	e->sender->proto->name, e->sender->name, src_ch->table->name,
+	n, src->proto->name, src->private_id, src->global_id);
+  else
+    return e->sender->proto->rte_track(e->sender, n, src);
+}
 
 static void
 pipe_postconfig(struct proto_config *CF)
@@ -185,6 +207,7 @@ pipe_init(struct proto_config *CF)
   P->rt_notify = pipe_rt_notify;
   P->preexport = pipe_preexport;
   P->reload_routes = pipe_reload_routes;
+  P->rte_track = pipe_rte_track;
 
   pipe_configure_channels(p, cf);
 
