@@ -158,7 +158,6 @@ typedef struct rtable {
   char *name;				/* Name of this table */
   list channels;			/* List of attached channels (struct channel) */
   uint addr_type;			/* Type of address data stored in table (NET_*) */
-  int pipe_busy;			/* Pipe loop detection */
   int use_count;			/* Number of protocols using this table */
   u32 rt_count;				/* Number of routes in the table */
   struct hmap id_map;
@@ -234,6 +233,9 @@ typedef struct rte {
   struct channel *sender;		/* Channel used to send the route to the routing table */
   byte flags;				/* Flags (REF_...) */
   byte pflags;				/* Protocol-specific flags */
+  u8 generation;			/* If this route import is based on other previously exported route,
+					   this value should be 1 + MAX(generation of the parent routes).
+					   Otherwise the route is independent and this value is zero. */
 } rte;
 
 struct rte_storage {
@@ -247,6 +249,7 @@ struct rte_storage {
   u32 id;				/* Table specific route id */
   byte flags;				/* Flags (REF_...) */
   byte pflags;				/* Protocol-specific flags */
+  u8 generation;			/* See struct rte */
   btime lastmod;			/* Last modified */
 };
 
@@ -366,6 +369,7 @@ static inline rte rte_copy(const struct rte_storage *r)
     .net = r->net->n.addr,
     .src = r->src,
     .sender = r->sender,
+    .generation = r->generation,
     .flags = r->flags,
     .pflags = r->pflags
   } : (rte) {};
@@ -517,6 +521,9 @@ static inline const char *rta_dest_name(uint n)
 /* Route has regular, reachable nexthop (i.e. not RTD_UNREACHABLE and like) */
 static inline int rte_is_reachable(rte *r)
 { return r->attrs->dest == RTD_UNICAST; }
+
+/* Rate limiting token buffer for route trace */
+extern struct tbf rl_pipe;
 
 
 /*
