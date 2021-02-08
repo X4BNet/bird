@@ -17,8 +17,11 @@
 #include <unistd.h>
 
 #include "nest/bird.h"
+#include "lib/coro.h"
+#include "lib/locking.h"
 #include "conf/conf.h"
 #include "conf/parser.h"
+#include "sysdep/unix/unix.h"
 
 #ifdef PATH_IPROUTE_DIR
 
@@ -267,9 +270,9 @@ unix_cf_outclude(struct conf_order *co)
 }
 
 #define MAX_INCLUDE_DEPTH 8
-
-struct config *
-unix_read_config(const char *name, cf_error_type arg_cf_error)
+  
+int
+unix_read_config(const char *name, struct config *new_config, cf_error_type arg_cf_error, volatile _Atomic _Bool *cancelled)
 {
   struct conf_state state = { .name = name };
 
@@ -286,14 +289,13 @@ unix_read_config(const char *name, cf_error_type arg_cf_error)
       .cf_outclude = unix_cf_outclude,
       .cf_error_hook = arg_cf_error,
       .state = &state,
+      .cancelled = cancelled,
+      .new_config = new_config,
     },
     .ifs = &uifs,
   };
 
-  if (config_parse(&uco.co))
-    return uco.co.new_config;
-  else
-    return NULL;
+  return config_parse(&uco.co);
 }
 
 static void
@@ -305,8 +307,27 @@ unix_cf_error_die(struct conf_order *order, const char *msg, va_list args)
 struct config *
 read_config(void)
 {
-  return unix_read_config(config_name, unix_cf_error_die);
+  struct config *conf = config_alloc(NULL, NULL);
+
+  if (unix_read_config(config_name, conf, unix_cf_error_die, NULL))
+    return conf;
+
+  config_free(conf);
+  return NULL;
 }
+
+static struct reconfig_coro {
+  const char *name;
+  int type;
+  uint timeout;
+  struct coroutine *coro;
+  cli *cli;
+  cf_error_type err;
+  struct conf_order *order;
+  volatile _Atomic _Bool cancelled;
+} *current_reconfig_coro;
+
+static _Thread_local struct reconfig_coro *local_reconfig_coro;
 
 static void
 unix_cf_error_log(struct conf_order *order, const char *msg, va_list args)
@@ -314,41 +335,20 @@ unix_cf_error_log(struct conf_order *order, const char *msg, va_list args)
   log(L_ERR "%s, line %u: %V", order->state->name, order->state->lino, msg, &args);
 }
 
-void
-async_config(void)
-{
-  log(L_INFO "Reconfiguration requested by SIGHUP");
-  struct config *conf = unix_read_config(config_name, unix_cf_error_log);
-
-  if (conf)
-    config_commit(conf, RECONFIG_HARD, 0);
-}
-
 static void
 unix_cf_error_cli(struct conf_order *order, const char *msg, va_list args)
 {
-  cli_msg(8002, "%s, line %d: %s", order->state->name, order->state->lino, msg, &args);
-}
+  birdloop_enter(&main_birdloop);
 
-static struct config *
-cmd_read_config(const char *name)
-{
-  if (!name)
-    name = config_name;
+  cli *c = local_reconfig_coro->cli;
+  if (c)
+  {
+    cli_printf(c, 8002, "%s, line %d: %s", order->state->name, order->state->lino, msg, &args);
+    cli_write_trigger(c);
+    birdloop_ping(&main_birdloop);
+  }
 
-  cli_msg(-2, "Reading configuration from %s", name);
-  return unix_read_config(name, unix_cf_error_cli);
-}
-
-void
-cmd_check_config(const char *name)
-{
-  struct config *conf = cmd_read_config(name);
-  if (!conf)
-    return;
-
-  cli_msg(20, "Configuration OK");
-  config_free(conf);
+  birdloop_leave(&main_birdloop);
 }
 
 static void
@@ -382,24 +382,163 @@ cmd_reconfig_undo_notify(void)
 }
 
 void
+reconfig_coro(void *data)
+{
+  struct reconfig_coro *rc = local_reconfig_coro = data;
+
+  birdloop_enter(&main_birdloop);
+  struct config *conf = config_alloc(NULL, NULL);
+  birdloop_leave(&main_birdloop);
+  
+  int success = unix_read_config(rc->name, conf, rc->err, &rc->cancelled);
+
+  birdloop_enter(&main_birdloop);
+
+  if (!success)
+  {
+    config_free(conf);
+    goto cleanup;
+  }
+
+  this_cli = rc->cli;
+
+  switch (rc->type)
+  {
+    case RECONFIG_IGNORE:
+      ASSERT_DIE(this_cli == NULL);
+      config_free(conf);
+      break;
+
+    case RECONFIG_NONE:
+      config_free(conf);
+      if (this_cli)
+      {
+	cli_msg(20, "Configuration OK");
+	cli_write_trigger(this_cli);
+	this_cli->cont = NULL;
+      }
+      break;
+
+    default:
+      {
+	if (this_cli)
+	{
+	  cli_msg(-20, "Configuration parsed OK, applying.");
+	  cli_write_trigger(this_cli);
+	}
+
+	int r = config_commit(conf, rc->type, rc->timeout);
+
+	if ((r >= 0) && (rc->timeout > 0) && this_cli)
+	{
+	  cmd_reconfig_stored_cli = this_cli;
+	  cli_msg(-22, "Undo scheduled in %d s", rc->timeout);
+	}
+
+	if (this_cli)
+	{
+	  cmd_reconfig_msg(r);
+	  cli_write_trigger(this_cli);
+	  this_cli->cont = NULL;
+	}
+      }
+  }
+
+cleanup:
+  if (rc == current_reconfig_coro)
+    current_reconfig_coro = NULL;
+
+  rfree(rc->coro);
+  mb_free(rc);
+
+  birdloop_ping(&main_birdloop);
+  birdloop_leave(&main_birdloop);
+}
+
+static void
+cmd_reconfig_cont(cli *c UNUSED)
+{}
+
+static _Bool
+cancel_reconfig(void)
+{
+  /* Nothing to cancel? */
+  if (!current_reconfig_coro)
+    return 0;
+
+  /* Set the reconfig type to ignore to drop it at least before commiting reconfig */
+  current_reconfig_coro->type = RECONFIG_IGNORE;
+
+  /* If the CLI is still connected to that reconfig coro, finish the command right now. */
+  if (current_reconfig_coro->cli)
+  {
+    current_reconfig_coro->cli->cont = NULL;
+    cli_printf(current_reconfig_coro->cli, 26, "Reconfiguration cancelled");
+    cli_write_trigger(current_reconfig_coro->cli);
+    /* This is always called from the main thread, no need to io_loop_reload(). */
+    current_reconfig_coro->cli = NULL;
+  }
+
+  /* Inform the lexer that it should stop right now. */
+  atomic_store_explicit(&current_reconfig_coro->cancelled, 1, memory_order_release);
+
+  /* Nobody is now reconfiguring. */
+  current_reconfig_coro = NULL;
+
+  /* Yes, something has been cancelled. */
+  return 1;
+}
+
+void
+cmd_reconfig_cancel(void)
+{
+  if (cancel_reconfig())
+    cli_msg(26, "Reconfiguration succesfully cancelled");
+  else
+    cli_msg(19, "Nothing to cancel");
+}
+
+void
+run_reconfig(cli *c, const char *name, int type, uint timeout)
+{
+  if (cancel_reconfig())
+    if (c)
+      cli_printf(c, -26, "Previous reconfiguration cancelled");
+
+  ASSERT_DIE(current_reconfig_coro == NULL);
+
+  if (c)
+  {
+    c->cont = cmd_reconfig_cont;
+    cli_printf(c, -2, "Reading configuration from %s", name);
+  }
+
+  current_reconfig_coro = mb_alloc(&root_pool, sizeof(struct reconfig_coro));
+  *current_reconfig_coro = (struct reconfig_coro) {
+    .name = name,
+    .type = type,
+    .timeout = timeout,
+    .cli = c,
+    .err = c ? unix_cf_error_cli : unix_cf_error_log,
+  };
+
+  current_reconfig_coro->coro = coro_run(&root_pool, reconfig_coro, current_reconfig_coro);
+}
+
+void
+async_config(void)
+{
+  log(L_INFO "Reconfiguration requested by SIGHUP");
+  run_reconfig(NULL, config_name, RECONFIG_HARD, 0);
+}
+
+void
 cmd_reconfig(const char *name, int type, uint timeout)
 {
   if (cli_access_restricted())
     return;
 
-  struct config *conf = cmd_read_config(name);
-  if (!conf)
-    return;
-
-  int r = config_commit(conf, type, timeout);
-
-  if ((r >= 0) && (timeout > 0))
-    {
-      cmd_reconfig_stored_cli = this_cli;
-      cli_msg(-22, "Undo scheduled in %d s", timeout);
-    }
-
-  cmd_reconfig_msg(r);
+  run_reconfig(this_cli, name ? name : config_name, type, timeout);
 }
 
 void

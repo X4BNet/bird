@@ -53,6 +53,7 @@
 #include "lib/string.h"
 #include "lib/event.h"
 #include "lib/timer.h"
+#include "lib/locking.h"
 #include "conf/conf.h"
 #include "conf/parser.h"
 #include "filter/filter.h"
@@ -110,8 +111,7 @@ config_parse(struct conf_order *order)
 {
   DBG("Parsing configuration named `%s'\n", order->state->name);
 
-  if (!order->new_config)
-    order->new_config = config_alloc(order->pool, order->lp);
+  ASSERT_DIE(order->new_config);
 
   struct cf_context *ctx = cf_new_context(order);
   int ret;
@@ -123,10 +123,6 @@ config_parse(struct conf_order *order)
 	  ;
 
       ret = 0;
-
-      config_free(ctx->new_config);
-      order->new_config = NULL;
-
       goto cleanup;
     }
 

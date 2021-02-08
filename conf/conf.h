@@ -81,13 +81,21 @@ struct conf_order {
   void (*cf_include)(struct conf_order *order, char *name, uint len);
   int (*cf_outclude)(struct conf_order *order);
   void (*cf_error_hook)(struct conf_order *order, const char *msg, va_list args);
-  int lexer_hack;			/* Begin with CLI_MARKER token */
+  _Bool cli_marker;			/* If set, return first the cli marker */
+  volatile _Atomic _Bool *cancelled;	/* If set, stop the parser */
 };
 
 typedef void (*cf_error_type)(struct conf_order *order, const char *msg, va_list args);
 
 /* Please don't use these variables in protocols. Use proto_config->global instead. */
 extern struct config *config;		/* Currently active configuration */
+
+/* Lexer flags */
+#define CLF_CLI		0x1		/* Set only on beginning */
+#define CLF_CANCEL	0x2		/* Set any time, stops the lexer immediately */
+
+/* Allocate new config */
+struct config * config_alloc(struct pool *pp, struct linpool *lp);
 
 /**
  * Parse configuration
@@ -96,8 +104,7 @@ extern struct config *config;		/* Currently active configuration */
  * @order provides callbacks to read config files
  *
  * Return value:
- * 1 on success; order->new_config is then set to the parsed config
- * 0 on fail; order->new_config is undefined
+ * 1 on success, 0 on fail
  **/
 int config_parse(struct conf_order *order);
 
@@ -134,6 +141,7 @@ void order_shutdown(int gr);
 #define RECONFIG_HARD	1
 #define RECONFIG_SOFT	2
 #define RECONFIG_UNDO	3
+#define RECONFIG_IGNORE	4
 
 #define CONF_DONE	0
 #define CONF_PROGRESS	1

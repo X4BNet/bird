@@ -12,6 +12,8 @@
 #include "sysdep/config.h"
 #include "lib/alloca.h"
 
+#include <stdatomic.h>
+
 /* Ugly structure offset handling macros */
 
 struct align_probe { char x; long int y; };

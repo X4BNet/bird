@@ -30,7 +30,7 @@
 #define BETWEEN(a, b, c)  (((a) >= (b)) && ((a) <= (c)))
 
 /* Defined in sysdep/unix/conf.c */
-struct config *unix_read_config(const char *name, cf_error_type arg_cf_error);
+int unix_read_config(const char *name, struct config *conf, cf_error_type arg_cf_error, volatile _Atomic _Bool *cancelled);
 
 struct cf_context *
 bt_bird_init(void)
@@ -88,7 +88,8 @@ bt_cf_error(struct conf_order *order, const char *msg, va_list args)
 struct config *
 bt_config_file_parse(const char *filepath)
 {
-  struct config *new = unix_read_config(filepath, bt_cf_error);
+  struct config *new = config_alloc(NULL, NULL);
+  unix_read_config(filepath, new, bt_cf_error, NULL);
   config_commit(new, RECONFIG_HARD, 0);
   return new;
 }

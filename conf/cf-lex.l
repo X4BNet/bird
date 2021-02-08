@@ -86,8 +86,6 @@ HASH(struct keyword) kw_hash;
 #define YY_FATAL_ERROR(...) cf_error_(CTX, __VA_ARGS__)
 #define YY_USER_ACTION CST->chno += yyleng; CST->toklen = yyleng; CST->lastpos = yytext;
 
-_Thread_local int cli_rh_trick_flag;
-
 #define YYSCANNER yyscanner
 
 #define QUOTED_BUFFER_SIZE  4096
@@ -124,11 +122,14 @@ WHITE [ \t]
 %%
 
 %{
-  if (cli_rh_trick_flag)
+  if (COR->cli_marker)
   {
-    cli_rh_trick_flag = 0;
+    COR->cli_marker = 0;
     return CLI_MARKER;
   }
+
+  if (COR->cancelled && atomic_load_explicit(COR->cancelled, memory_order_acquire))
+    YY_FATAL_ERROR("Parser cancelled externally");
 %}
 
 ^{WHITE}*include{WHITE}*\" {

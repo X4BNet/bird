@@ -1115,6 +1115,13 @@ This argument can be omitted if there exists only a single instance.
 	config timeout expiration is equivalent to <cf/configure undo/
 	command. The timeout duration could be specified, default is 300 s.
 
+	Configuration reload has two phases: parsing and applying. If configure
+	is requested from another CLI before parsing phase ends, BIRD cancels
+	parsing of previous configuration. Applying phase can't be cancelled.
+
+	<tag><label id="cli-configure-cancel">configure cancel</tag>
+	Cancel the current reconfiguration. Works only in the parsing phase.
+
 	<tag><label id="cli-configure-confirm">configure confirm</tag>
 	Deactivate the config undo timer and therefore confirm the current
 	configuration.

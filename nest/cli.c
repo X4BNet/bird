@@ -264,7 +264,6 @@ cli_cmd_error(struct conf_order *co, const char *msg, va_list args)
   cli_vprintf(cco->cli, 9001, msg, args);
 }
 
-extern _Thread_local int cli_rh_trick_flag;
 _Thread_local struct cli *this_cli;
 
 static void
@@ -285,6 +284,7 @@ cli_command(struct cli *c)
       .cf_error_hook = cli_cmd_error,
       .lp = c->parser_pool,
       .pool = c->pool,
+      .cli_marker = 1,
     },
     .pos = c->rx_buf,
     .len = strlen(c->rx_buf),
@@ -292,7 +292,6 @@ cli_command(struct cli *c)
   };
 
   this_cli = c;
-  cli_rh_trick_flag = 1;
 
   if (config->cli_debug > 1)
     log(L_TRACE "CLI: %s", c->rx_buf);

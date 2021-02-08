@@ -135,7 +135,10 @@ CF_CLI(CONFIGURE STATUS,,, [[Show configuration status]])
 { cmd_reconfig_status(); } ;
 
 CF_CLI(CONFIGURE CHECK, cfg_name, [\"<file>\"], [[Parse configuration and check its validity]])
-{ cmd_check_config($3); } ;
+{ cmd_reconfig($3, RECONFIG_NONE, 0); } ;
+
+CF_CLI(CONFIGURE CANCEL,,, [[Cancel configuration parsing]])
+{ cmd_reconfig_cancel(); } ;
 
 CF_CLI(DOWN,,, [[Shut the daemon down]])
 { cmd_shutdown(); } ;
