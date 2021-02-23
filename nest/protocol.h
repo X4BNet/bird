@@ -546,6 +546,7 @@ struct channel {
   u8 reload_pending;			/* Reloading and another reload is scheduled */
   u8 refeed_pending;			/* Refeeding and another refeed is scheduled */
   u8 rpki_reload;			/* RPKI changes trigger channel reload */
+  u8 explicit_flush;			/* Feed by withdrawals on export reset */
 
   struct rtable *out_table;		/* Internal table for exported routes */
 

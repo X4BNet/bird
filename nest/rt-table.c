@@ -2515,8 +2515,9 @@ rte_update_out(struct channel *c, rte *new, struct rte_storage *old, struct rte_
 
   /* Insert the new rte */
   struct rte_storage *e = rte_store(new, net);
-  e->sender = c;
+  e->sender = new->sender;
   e->lastmod = current_time();
+  e->id = new->id;
   e->next = *pos;
   *pos = e;
   tab->rt_count++;
@@ -2527,7 +2528,7 @@ drop:
 }
 
 void
-rt_refeed_channel(struct channel *c)
+rt_refeed_channel(struct channel *c, struct bmap *seen)
 {
   if (!c->out_table)
   {
@@ -2535,21 +2536,24 @@ rt_refeed_channel(struct channel *c)
     return;
   }
 
-  ASSERT_DIE(c->ra_mode != RA_ANY);
 
-  c->proto->feed_begin(c, 0);
+  if (c->proto->feed_begin)
+    c->proto->feed_begin(c, 0);
 
   FIB_WALK(&c->out_table->fib, net, n)
   {
     for (struct rte_storage *r = n->routes; r; r = r->next)
     {
+      if (seen && bmap_test(seen, r->id))
+	continue;
       rte e = rte_copy(r);
       c->proto->rt_notify(c->proto, c, n->n.addr, &e, NULL);
     }
   }
   FIB_WALK_END;
-
-  c->proto->feed_end(c);
+  
+  if (c->proto->feed_end)
+    c->proto->feed_end(c);
 }
 
 void
@@ -2578,6 +2582,22 @@ rt_refeed_channel_net(struct channel *c, const net_addr *n)
       else if (nn->routes && rte_is_valid(nn->routes))
 	do_feed_channel(c, nn, nn->routes);
   }
+}
+
+void
+rt_flush_channel(struct channel *c)
+{
+  ASSERT_DIE(c->out_table);
+  ASSERT_DIE(c->ra_mode != RA_ANY);
+
+  FIB_WALK(&c->out_table->fib, net, n)
+  {
+    if (!n->routes)
+      continue;
+
+    c->proto->rt_notify(c->proto, c, n->n.addr, NULL, n->routes);
+  }
+  FIB_WALK_END;
 }
 
 

@@ -68,14 +68,12 @@
  */
 
 pool *krt_pool;
-static linpool *krt_filter_lp;
 static list krt_proto_list;
 
 void
 krt_io_init(void)
 {
   krt_pool = rp_new(&root_pool, "Kernel Syncer");
-  krt_filter_lp = lp_new_default(krt_pool);
   init_list(&krt_proto_list);
   krt_sys_io_init();
 }
@@ -539,57 +537,6 @@ krt_dump(struct proto *P)
  *	Routes
  */
 
-static inline int
-krt_is_installed(struct krt_proto *p, net *n)
-{
-  return n->routes && bmap_test(&p->p.main_channel->export_map, n->routes->id);
-}
-
-static void
-krt_flush_routes(struct krt_proto *p)
-{
-  struct rtable *t = p->p.main_channel->table;
-
-  KRT_TRACE(p, D_EVENTS, "Flushing kernel routes");
-  FIB_WALK(&t->fib, net, n)
-    {
-      if (krt_is_installed(p, n))
-	{
-	  rte old_copy = rte_copy(n->routes);
-	  /* FIXME: this does not work if gw is changed in export filter */
-	  krt_replace_rte(p, NULL, &old_copy);
-	}
-    }
-  FIB_WALK_END;
-}
-
-static _Bool
-krt_export_net(struct krt_proto *p, net *net, rte *rt)
-{
-  struct channel *c = p->p.main_channel;
-  const struct filter *filter = c->out_filter;
-
-  if (c->ra_mode == RA_MERGED)
-    return rt_export_merged(c, net, rt, krt_filter_lp, 1);
-
-  if (!rte_is_valid(net->routes))
-    return 0;
-
-  if (filter == FILTER_REJECT)
-    return 0;
-
-  /* We could run krt_preexport() here, but it is already handled by krt_is_installed() */
-  *rt = rte_copy(net->routes);
-
-  if (filter == FILTER_ACCEPT)
-    return 1;
-
-  if (f_run(filter, rt, krt_filter_lp, FF_SILENT) > F_ACCEPT)
-    return 0;
-
-  return 1;
-}
-
 static int
 krt_same_dest(rte *k, rte *e)
 {
@@ -612,8 +559,6 @@ krt_same_dest(rte *k, rte *e)
 void
 krt_got_route(struct krt_proto *p, rte *e, s8 src)
 {
-  rte new = {};
-
 #ifdef KRT_ALLOW_LEARN
   switch (src)
     {
@@ -633,57 +578,30 @@ krt_got_route(struct krt_proto *p, rte *e, s8 src)
 #endif
   /* The rest is for KRT_SRC_BIRD (or KRT_SRC_UNKNOWN) */
 
-
   /* We wait for the initial feed to have correct installed state */
   if (!p->ready)
-    goto ignore;
-
-  net *n = net_find(p->p.main_channel->table, e->net);
-
-  if (!n || !krt_is_installed(p, n))
-    goto delete;
-
-  /* Rejected by filters */
-  if (!krt_export_net(p, n, &new))
-    goto delete;
-
-  /* Route to this destination was already seen. Strange, but it happens... */
-  if (bmap_test(&p->seen_map, new.id))
-    goto aseen;
-
-  /* Mark route as seen */
-  bmap_set(&p->seen_map, new.id);
-
-  /* TODO: There also may be changes in route eattrs, we ignore that for now. */
-  if (!bmap_test(&p->sync_map, new.id) || !krt_same_dest(e, &new))
-    goto update;
-
-  goto seen;
-
-seen:
-  krt_trace_in(p, e, "seen");
-  goto done;
-
-aseen:
-  krt_trace_in(p, e, "already seen");
-  goto done;
-
+  {
 ignore:
-  krt_trace_in(p, e, "ignored");
-  goto done;
+    krt_trace_in(p, e, "ignored");
+    return;
+  }
 
-update:
-  krt_trace_in(p, &new, "updating");
-  krt_replace_rte(p, &new, e);
-  goto done;
+  ASSERT_DIE(e->id == 0);
 
+  /* Synchronously refeed from out_table */
+  p->resync_rte = e;
+  rt_refeed_channel_net(p->p.main_channel, e->net);
+  p->resync_rte = NULL;
+
+  if (!e->id)
+  {
 delete:
-  krt_trace_in(p, e, "deleting");
-  krt_replace_rte(p, NULL, e);
-  goto done;
+    krt_trace_in(p, e, "deleting");
+    krt_replace_rte(p, NULL, e);
+    return;
+  }
 
-done:
-  lp_flush(krt_filter_lp);
+  bmap_set(&p->seen_map, e->id);
 }
 
 static void
@@ -695,24 +613,11 @@ krt_init_scan(struct krt_proto *p)
 static void
 krt_prune(struct krt_proto *p)
 {
-  struct rtable *t = p->p.main_channel->table;
+  KRT_TRACE(p, D_EVENTS, "Sync finished, pruning table %s", p->p.main_channel->table->name);
 
-  KRT_TRACE(p, D_EVENTS, "Pruning table %s", t->name);
-  FIB_WALK(&t->fib, net, n)
-  {
-    if (p->ready && krt_is_installed(p, n) && !bmap_test(&p->seen_map, n->routes->id))
-    {
-      rte new = {};
-      if (krt_export_net(p, n, &new))
-      {
-	krt_trace_in(p, &new, "installing");
-	krt_replace_rte(p, &new, NULL);
-      }
-
-      lp_flush(krt_filter_lp);
-    }
-  }
-  FIB_WALK_END;
+  p->pruning = 1;
+  rt_refeed_channel(p->p.main_channel, &p->seen_map);
+  p->pruning = 0;
 
 #ifdef KRT_ALLOW_LEARN
   if (KRT_CF->learn)
@@ -868,12 +773,15 @@ krt_preexport(struct channel *c, rte *e)
 }
 
 static void
-krt_rt_notify(struct proto *P, struct channel *ch UNUSED, const net_addr *net UNUSED,
+krt_rt_notify(struct proto *P, struct channel *ch UNUSED, const net_addr *net,
 	      rte *new, const struct rte_storage *old)
 {
   struct krt_proto *p = (struct krt_proto *) P;
 
   if (config->shutdown)
+    return;
+
+  if (!p->initialized && !(p->ready && p->pruning))
     return;
 
 #ifdef CONFIG_SINGLE_ROUTE
@@ -888,11 +796,31 @@ krt_rt_notify(struct proto *P, struct channel *ch UNUSED, const net_addr *net UN
     return;
 #endif
 
-  if (p->initialized)		/* Before first scan we don't touch the routes */
+  if (!p->resync_rte)
   {
     rte old_copy = old ? rte_copy(old) : (rte) {};
     krt_replace_rte(p, new, old ? &old_copy : NULL);
+    return;
   }
+
+  ASSERT_DIE(net_equal(net, p->resync_rte->net));
+
+  if (bmap_test(&p->seen_map, new->id))
+  {
+    krt_trace_in(p, new, "already seen");
+    return;
+  }
+
+  /* TODO: There also may be changes in route eattrs, we ignore that for now. */
+  if (!bmap_test(&p->sync_map, new->id) || !krt_same_dest(p->resync_rte, new))
+  {
+    krt_trace_in(p, new, "updating");
+    krt_replace_rte(p, new, p->resync_rte);
+    return;
+  }
+
+  p->resync_rte->id = new->id;
+  krt_trace_in(p, new, "seen");
 }
 
 static void
@@ -930,6 +858,8 @@ static void
 krt_feed_end(struct channel *C)
 {
   struct krt_proto *p = (void *) C->proto;
+  if (p->pruning)
+    return;
 
   p->ready = 1;
   krt_scan_timer_kick(p);
@@ -988,6 +918,7 @@ krt_init(struct proto_config *CF)
   // struct krt_config *cf = (void *) CF;
 
   p->p.main_channel = proto_add_channel(&p->p, proto_cf_main_channel(CF));
+  p->p.main_channel->explicit_flush = 1;
 
   p->p.preexport = krt_preexport;
   p->p.rt_notify = krt_rt_notify;
@@ -1015,6 +946,7 @@ krt_start(struct proto *P)
   default: log(L_ERR "KRT: Tried to start with strange net type: %d", p->p.net_type); return PS_START; break;
   }
 
+  channel_setup_out_table(p->p.main_channel);
   bmap_init(&p->sync_map, p->p.pool, 1024);
   bmap_init(&p->seen_map, p->p.pool, 1024);
   add_tail(&krt_proto_list, &p->krt_node);
@@ -1046,7 +978,7 @@ krt_shutdown(struct proto *P)
 
   /* FIXME we should flush routes even when persist during reconfiguration */
   if (p->initialized && !KRT_CF->persist && (P->down_code != PDC_CMD_GR_DOWN))
-    krt_flush_routes(p);
+    rt_flush_channel(p->p.main_channel);
 
   p->ready = 0;
   p->initialized = 0;
