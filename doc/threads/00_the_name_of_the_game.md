@@ -9,13 +9,14 @@ BIRD for big loads of routing data.
 ## IPv4 / IPv6 duality: Solved
 
 The original design of BIRD has also some drawbacks. One of these was an idea
-of two separate daemons – BIRD for IPv4 and BIRD for IPv6, built from the same
-codebase, cleverly using `#ifdef IPV6` constructions to implement only the
-necessary parts twice. If IPv6 adoption went forward as people thought in that time,
+of two separate daemons – one BIRD for IPv4 and another BIRD for IPv6, built from the same
+codebase, cleverly using `#ifdef IPV6` constructions to implement the
+common parts of BIRD algorithms and data structures only once.
+If IPv6 adoption went forward as people thought in that time,
 it would work; after finishing the worldwide transition to IPv6, people could
 just stop building BIRD for IPv4 and drop the `#ifdef`-ed code.
 
-The history went other way, however. BIRD developers therefore decided to integrate
+The history went other way, however. BIRD developers therefore decided to *integrate*
 these two versions into one daemon capable of any address family, allowing for
 not only IPv6 but for virtually anything. This rework brought quite a lot of
 backward-incompatible changes, therefore we decided to release it as a version 2.0.
@@ -27,21 +28,21 @@ switched the 1.6.x branch to a bugfix-only mode.
 The second drawback is a single-threaded design. Looking back to 1998, this was
 a good idea. A common PC had one single core and BIRD was targeting exactly
 this segment. As the years went by, the manufacturers launched multicore x86 chips
-(AMD Opteron in 2004, Intel Pentium D in 2005) as the clocking frequency growth
-slowed down and eventually stopped.
+(AMD Opteron in 2004, Intel Pentium D in 2005). This ultimately led to a world
+where as of March 2021, there is virtually no new PC sold with a single-core CPU.
 
-For now, BIRD is still single-threaded (with an exception of a separate BFD thread).
-BIRD is also still capable (with almost no changes since 1998!) to handle the
-full BGP table (868k routes in March 2021), anyway when BIRD starts, it may take
+Together with these changes, the speed of one single core has not been growing as fast
+as the Internet is growing. BIRD is still capable to handle the full BGP table 
+(868k IPv4 routes in March 2021) with one core, anyway when BIRD starts, it may take
 long minutes to converge.
 
 ## Intermezzo: Filters
 
 In 2018, we took some data we had from large internet exchanges  and simulated
-a cold start of BIRD as a route server. We used `perf` to find most time-critical
-parts of BIRD and it pointed to the filtering code. It also showed that the
-IPv4 version of BIRD v1.6.x is substantially faster than the integrated version, while
-the IPv6 version was quite as fast as the integrated one.
+a cold start of BIRD as a route server. We used `linux-perf` to find most time-critical
+parts of BIRD and it pointed very clearly to the filtering code. It also showed that the
+IPv4 version of BIRD v1.6.x is substantially faster than the *integrated* version, while
+the IPv6 version was quite as fast as the *integrated* one.
 
 Here we should show a little bit more about how the filters really work. Let's use
 an example of a simple filter:
@@ -58,7 +59,7 @@ This filter gets translated to an infix internal structure.
 
 ![Example of filter internal representation](00_filter_structure.png)
 
-When executing, the filter interpreter just walks the graph recursively in the
+When executing, the filter interpreter just walks the filter internal structure recursively in the
 right order, executes the instructions, collects their results and finishes by
 either rejection or acceptation of the route
 
@@ -75,7 +76,10 @@ stack back and returned.
 
 After some thoughts how to minimize stack manipulation when everything you need
 is to take two numbers and multiply them, we decided to preprocess the filter
-internal structure to another structure which is much easier to execute.
+internal structure to another structure which is much easier to execute. The
+interpreter is now using a data stack and behaves generally as a
+postfix-ordered language. We also thought about Lua which showed up to be quite
+a lot of work implementing all the glue achieving about the same performance.
 
 After these changes, we managed to reduce the filter execution time by 10–40%,
 depending on how complex the filter is.
@@ -93,6 +97,7 @@ time on synchronization overhead.
 The only filter parallel execution was also too one-sided, useful only for
 configurations with complex filters. In other cases, the major problem is best
 route recalculation, OSPF recalculation or also kernel synchronization.
+It also turned out to be dirty a lot from the code cleanliness' point of view.
 
 Therefore we chose to make BIRD multithreaded completely. We designed a way how
 to gradually enable parallel computation and best usage of all available CPU

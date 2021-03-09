@@ -1,9 +1,10 @@
 # BIRD Journey to Threads. Chapter 1: The Route and its Attributes
 
 BIRD is a fast, robust and memory-efficient routing daemon designed and
-implemented at the end of 20th century. Its concept of multiple routing
-tables with pipes between them will be the topic of this and the following
-chapter of BIRD Journey to Threads series.
+implemented at the end of 20th century. We're doing a significant amount of
+BIRD's internal structure changes to make it possible to run in multiple
+threads in parallel. This chapter covers necessary changes of data structures
+which store every single routing data.
 
 ## How routes are stored
 
@@ -129,4 +130,5 @@ We also aim for a clean and documented protocol API.
 
 *It's still a long road to the version 2.1. This series of texts should document
 what is needed to be changed, why we do it and how. In the next chapter, we're
-going to describe the route export and how it is changing. Stay tuned!*
+going to describe how the route is exported from table to protocols and how this
+process is changing. Stay tuned!*
