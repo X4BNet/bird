@@ -104,6 +104,6 @@ cores. Our goals are three:
   possible step will need quite a lot of refactoring before.
 * We want to be backwards compatible as much as possible.
 
-It's still a long road to the version 2.1. This series of texts should document
+*It's still a long road to the version 2.1. This series of texts should document
 what is needed to be changed, why we do it and how. In the next chapter, we're
-going to describe the structures for routes and their attributes. Stay tuned!
+going to describe the structures for routes and their attributes. Stay tuned!*

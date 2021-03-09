@@ -41,10 +41,92 @@ containing all the remaining route attributes.
 Distribution of the route attributes between the attribute layers is somehow
 arbitrary. Mostly, in the first and second layer, there are attributes that
 were thought to be accessed frequently (e.g. in best route selection) and
-filled in in most routes, while in the third layer, there are infrequently used
+filled in in most routes, while the third layer is for infrequently used
 and/or infrequently accessed route attributes.
 
+## Attribute list deduplication
 
+When BGP or OSPF originates routes, there are commonly more routes with the
+same attribute list. BIRD could ignore this fact, anyway if you have several
+tables connected with pipes, it is more memory-efficient to store the same
+attribute lists only once.
 
-When BGP or OSPF originates routes, there are commonly more routes with the same attribute list. 
+Therefore, the two lower layers (*rta* and *ea*) are hashed and stored in a 
+BIRD-global database. Routes (*rte*) contain a pointer to *rta* in this
+database, maintaining a use-count of each *rta*.
 
+## Attribute list rework
+
+The first thing to change is the distribution of route attributes between
+attribute list layers. We decided to make the first layer (*rte*) only the key
+and other per-record internal technical information. Therefore we move *src* to
+*rte* and preference to *rta* (beside other things).
+
+We also found out that the nexthop (gateway), originally one single IP address
+and an interface, has evolved to a complex attribute with several sub-attributes;
+not only considering multipath routing but also MPLS stacks and other per-route
+attributes. This has led to a too complex data structure holding the nexthop set.
+
+We decided finally to squash *rta* and *ea* to one type of data structure,
+allowing for completely dynamic route attribute lists. This is also supported
+by adding other *net* types (BGP FlowSpec or ROA) where lots of the fields make
+no sense at all, yet we still want to use the same data structures and implementation
+as we don't like duplicating code.
+
+## Route storage
+
+The process of route import from protocol into a table can be divided into several phases:
+
+1. (In protocol code.) Create the route itself (typically from
+   protocol-internal data) and choose the right channel to use.
+2. (In protocol code.) Create the *rta* and *ea* and obtain an appropriate
+   hashed pointer. Allocate the *rte* structure and fill it in. 
+3. (Optionally.) Storing the route to the *import table*.
+4. Running filters. If reject, free everything.
+5. Check whether this is a real change (it may be idempotent). If not, free everything and do nothing more.
+6. Run the best route selection algorithm.
+7. Execute exports if needed.
+
+We found out that the *rte* structure allocation is done too early. BIRD uses
+global optimized allocators for fixed-size blocks (which *rte* is) to reduce
+its memory footprint, therefore the allocation of *rte* structure would be a
+synchronization point in multithreaded environment.
+
+The common code is also much more complicated when we have to track whether the
+current *rte* has to be freed or not. This is more a problem in export than in
+import as the export filter can also change the route (and therefore allocate
+another *rte*). The changed route must be therefore freed after use. All the
+route changing code must also track whether this route is writable or
+read-only.
+
+We therefore introduce a variant of *rte* called *rte_storage*. Both of these
+hold the same, the layer-1 route information (destination, author, cached
+attribute pointer, flags etc.), anyway *rte* is always local and *rte_storage*
+is intended to be put in global data structures.
+
+This change allows us to remove lots of the code which only tracks whether any
+*rte* is to be freed as *rte*'s are almost always allocated on-stack, naturally
+limiting their lifetime.
+
+This change also removes the need for *rte* allocation in protocol code and
+also *rta* can be safely allocated on-stack. As a result, protocols can simply
+allocate all the data on stack, call the update routine and the common code in
+BIRD's *nest* does all the storage for them.
+
+Allocating *rta* on-stack is however not required and BGP uses this to import
+several routes with the same attribute list which corresponds to the format of
+BGP Update messages.
+
+## Parallel protocol execution
+
+The long-term goal of these reworks is to allow for completely independent
+execution of all the protocols. Typically, there is no direct interaction
+between protocols; everything is done thought BIRD's *nest*. Protocols should
+therefore run in parallel in future and wait/lock only when something is needed
+to do externally.
+
+We also aim for a clean and documented protocol API.
+
+*It's still a long road to the version 2.1. This series of texts should document
+what is needed to be changed, why we do it and how. In the next chapter, we're
+going to describe the route export and how it is changing. Stay tuned!*
