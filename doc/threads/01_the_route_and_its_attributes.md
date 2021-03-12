@@ -82,8 +82,8 @@ The process of route import from protocol into a table can be divided into sever
    protocol-internal data) and choose the right channel to use.
 2. (In protocol code.) Create the *rta* and *ea* and obtain an appropriate
    hashed pointer. Allocate the *rte* structure and fill it in. 
-3. (Optionally.) Storing the route to the *import table*.
-4. Running filters. If reject, free everything.
+3. (Optionally.) Store the route to the *import table*.
+4. Run filters. If reject, free everything.
 5. Check whether this is a real change (it may be idempotent). If not, free everything and do nothing more.
 6. Run the best route selection algorithm.
 7. Execute exports if needed.
@@ -117,6 +117,17 @@ BIRD's *nest* does all the storage for them.
 Allocating *rta* on-stack is however not required and BGP uses this to import
 several routes with the same attribute list which corresponds to the format of
 BGP Update messages.
+
+## Route cleanup and table maintenance
+
+In some cases, the route update is not originated by a protocol/channel code.
+When the channel shuts down, all routes originated by that channel are simply
+cleaned up. Also routes with recursive routes may get changed without import,
+simply by changing the IGP route. 
+
+This is currently done by a `rt_event` (see `nest/rt-table.c` for source code)
+which is to be converted to a parallel thread, running when nobody imports any
+route.
 
 ## Parallel protocol execution
 
