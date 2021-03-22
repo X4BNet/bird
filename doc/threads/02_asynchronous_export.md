@@ -1,4 +1,4 @@
-# BIRD Journey to Threads. Chapter 1: Route Export
+# BIRD Journey to Threads. Chapter 2: Asynchronous route export
 
 BIRD is a fast, robust and memory-efficient routing daemon designed and
 implemented at the end of 20th century. We're doing a significant amount of
@@ -234,17 +234,14 @@ Finally, some additional information has to be stored in `struct rtable`.
 
 The `struct rt_pending_export` seems to be best allocated by requesting a whole
 memory page, containing a common list node, a simple header and packed all the
-structures in the rest of the page. Let's compare typical sizes:
+structures in the rest of the page. Let's compare typical sizes on 32-bit and
+64-bit architectures:
 
-+------------------------------+---------------------+---------------------+
-|                              | 64-bit architecture | 32-bit architecture |
-+------------------------------+---------------------+---------------------+
-| One list node size           |                16 B |                 8 B |
-+------------------------------+---------------------+---------------------+
-| Size of one export	       |	        56 B |                36 B |
-+------------------------------+---------------------+---------------------+
-| Exports in one page          |	          72 |                 112 |
-+------------------------------+---------------------+---------------------+
+|                        | 64-bit  | 32-bit |
+| ---------------------- | ------: | -----: |
+| One list node size     |   16 B  |   8 B  |
+| Size of one export	 |   56 B  |  36 B  |
+| Exports in one page    |   72    |   112  |
 
 In case of congestion, there will be lots of exports and every spare kilobyte
 counts. If BIRD is almost idle, the optimization does nothing on the overall performance.
