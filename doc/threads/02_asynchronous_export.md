@@ -218,17 +218,36 @@ We should also add several items into `struct channel`.
   struct rt_pending_export *current_export;	/* If exporting, this is set, otherwise NULL */
   struct bmap export_seen_map;			/* One if that export has been already seen */
   u64 export_seq_indexer;			/* Sequential ID reducer for bitmap usage */
+  u64 export_seq_last_cleanup;			/* Last sequential ID when cleanup was triggered */
   semaphore pending_exports_sem;		/* Post if export pushed */
+  struct coroutine *export_coro;		/* The export coroutine */
 ```
 
 Finally, some additional information has to be stored in `struct rtable`.
 
 ```
-  list pending_exports;				/* List of struct rt_pending_export */
+  list pending_exports;				/* List of packed struct rt_pending_export */
   struct fib export_fib;			/* Fib storing newest exports for each net */
   _Atomic u64 next_export_seq;			/* The next export will have this ID */
   coro *maint_coro;				/* Maintenance coroutine */
 ```
+
+The `struct rt_pending_export` seems to be best allocated by requesting a whole
+memory page, containing a common list node, a simple header and packed all the
+structures in the rest of the page. Let's compare typical sizes:
+
++------------------------------+---------------------+---------------------+
+|                              | 64-bit architecture | 32-bit architecture |
++------------------------------+---------------------+---------------------+
+| One list node size           |                16 B |                 8 B |
++------------------------------+---------------------+---------------------+
+| Size of one export	       |	        56 B |                36 B |
++------------------------------+---------------------+---------------------+
+| Exports in one page          |	          72 |                 112 |
++------------------------------+---------------------+---------------------+
+
+In case of congestion, there will be lots of exports and every spare kilobyte
+counts. If BIRD is almost idle, the optimization does nothing on the overall performance.
 
 ### Export algorithm
 
@@ -241,4 +260,95 @@ has something new in export queue and the channel decides what to do with that a
 
 When a table has something to export, it obtains, fills and enqueues an
 instance of `struct rt_pending_export`. Then it pings its maintenance coroutine
-(`rt_event`) to notify the exporting channels about a new route.
+(`rt_event`) to notify the exporting channels about a new route. If there is
+already a ping pending, nothing is done.
+
+The maintenance coroutine, when it manages to acquire the lock, walks the list
+of channels and wakes or starts their export coroutines unless they are already
+processing an older export.
+
+These two levels of asynchronicity are here for two reasons.
+
+1. There may be lots of channels (hundreds of them).
+2. The notification is going to wait until the route author finishes, hopefully
+   importing more routes and therefore allowing more exports to be processed at once.
+
+The table also finds the route destination in an auxiliary table (`export_fib`).
+This table stores the last exports for every destination. If there is no
+record, it simply creates a record pointing to the new export. If there is
+some, it sets that export's `next` pointer to this newer export and changes
+also the record to point to this export. This subqueue makes it possible for
+the double per-destination limit to work.
+
+#### Processing an export
+
+After those two levels of asynchronicity, the channel finally gets its turn.
+The channel knows what export to begin with: it is either that one in the
+notification (if notified), or simply the next one after the last processed.
+
+1. The channel checks its `export_seen_map` whether this export has been
+   already processed. If so, it skips to the next export. No action is needed.
+2. The channel composes the final export for the current destination by walking
+   the single-linked list in `next` pointers. The channel also marks all of
+   these exports as processed in its `export_seen_map`.
+3. If the double per-destination limit is set:
+    1. The channel (in first version) simply always asks the table for the current state.
+    2. Then the channel applies the recorded changes in reverse order.
+    3. Finally, the channel processes all the changes.
+4. In the best-only export mode, the `new_best` in the newest export is compared
+   to the `old_best` in the oldest export and propagated if different.
+5. In the export everything mode, the exports are (in first version) just propagated
+   from beginning to end.
+6. After the export is finished (or skipped):
+    1. If there is no other export, the `export_seen_map` is reset and
+       `export_seq_indexer` set to the table's `next_export_seq`.
+       Then the channel export coroutine sets a timer for several seconds before
+       shutting down.
+    2. If there are still exports pending but the difference between
+       `export_seq_indexer` and current export's `seq` is high enough,
+       the channel also moves its `export_seq_indexer` and shifts all the bits
+       in the `export_seen_map` down to reduce memory usage.
+    3. In any case, if there are exports pending, the channel export coroutine
+       releases and acquires the lock, allowing other routines to run as well,
+       and goes on to process the next export.
+
+#### Cleaning up
+
+The last question is cleaning up the exports that have been processed by all
+channels (and finally also freeing the routes). This is also done on demand by
+the table's maintenance coroutine.
+
+The channel export coroutine pings the table's maintenance coroutine in three cases.
+
+1. The coroutine is shutting down after being idle.
+2. Difference between the channel's `export_seq_last_cleanup` and
+   `export_seq_indexer` values is higher than a threshold.
+3. The channel's `export_seen_map` is being shifted.
+
+The first case covers cleanup when BIRD is almost idle. The third case covers
+cleanup in congestion times. The second case is the most tricky one; it covers
+a situation when the table gets several updates per second in a steady rate,
+enough to never shut down the export coroutines and also enough to reset the
+`export_seen_map` after almost every export.
+
+The table's maintenance coroutine walks all the channels and tries to find
+whether it can free at least one whole page of pending exports (see above).
+It may be not used completely but there must be no active export any more.
+If impossible, it just waits for another ping. Otherwise …
+
+1. The whole page is removed from the `pending_exports` list.
+2. For each of the exports, the auxiliary table record is checked and cleared if needed.
+3. All the `old` routes in the exports are freed.
+4. Finally, the page itself is returned to OS.
+5. If there is another page to clean up, the maintenance coroutine repeats this procedure.
+
+## Next steps
+
+After these changes, we have to move forward from threads to real parallel execution
+to have some actual performance improvement.
+
+*It's still a long road to the version 2.1. This series of texts should document
+what is needed to be changed, why we do it and how. The previous chapter showed 
+the necessary changes in route storage. In the next chapter, we're going to describe
+how the coroutines are implemented and what kind of locking system are we
+employing to prevent deadlocks. Stay tuned!*
