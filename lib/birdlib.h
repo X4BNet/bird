@@ -155,7 +155,8 @@ void debug(const char *msg, ...);	/* Printf to debug output */
 /* Debugging */
 
 #if defined(LOCAL_DEBUG) || defined(GLOBAL_DEBUG)
-#define DBG(x, y...) debug(x, ##y)
+extern _Thread_local struct coroutine *this_coro;
+#define DBG(x, y...) debug("C%p: " x, this_coro, ##y)
 #else
 #define DBG(x, y...) do { } while(0)
 #endif

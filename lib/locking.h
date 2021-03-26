@@ -16,6 +16,7 @@ struct lock_order {
   struct domain_generic *the_bird;
   struct domain_generic *rtable_internal;
   struct domain_generic *rtable;
+  struct domain_generic *rt_attr;
 };
 
 extern _Thread_local struct lock_order locking_stack;

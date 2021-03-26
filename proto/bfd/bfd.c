@@ -1064,7 +1064,7 @@ bfd_start(struct proto *P)
 }
 
 
-static int
+static void
 bfd_shutdown(struct proto *P)
 {
   struct bfd_proto *p = (struct bfd_proto *) P;
@@ -1086,8 +1086,6 @@ bfd_shutdown(struct proto *P)
   birdloop_leave(p->loop);
 
   birdloop_free(p->loop);
-
-  return PS_DOWN;
 }
 
 static int

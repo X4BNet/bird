@@ -339,7 +339,7 @@ err1:
   bgp_store_error(p, NULL, BE_MISC, err_val);
 
   p->neigh = NULL;
-  proto_notify_state(&p->p, PS_DOWN);
+  proto_notify_state(&p->p, PS_STOP);
 
   return;
 }
@@ -466,9 +466,15 @@ bgp_graceful_close_conn(struct bgp_conn *conn, int subcode, byte *data, uint len
   }
 }
 
-static void
-bgp_down(struct bgp_proto *p)
+static _Bool
+bgp_down(struct proto *P)
 {
+  struct bgp_proto *p = (struct bgp_proto *) P;
+
+  if ((p->outgoing_conn.state != BS_IDLE) ||
+      (p->incoming_conn.state != BS_IDLE))
+    return 0;
+
   if (p->start_state > BSS_PREPARE)
   {
     bgp_setup_auth(p, 0);
@@ -478,7 +484,7 @@ bgp_down(struct bgp_proto *p)
   p->neigh = NULL;
 
   BGP_TRACE(D_EVENTS, "Down");
-  proto_notify_state(&p->p, PS_DOWN);
+  return 1;
 }
 
 static void
@@ -492,11 +498,6 @@ bgp_decision(void *vp)
       (p->incoming_conn.state != BS_OPENCONFIRM) &&
       !p->passive)
     bgp_active(p);
-
-  if ((p->p.proto_state == PS_STOP) &&
-      (p->outgoing_conn.state == BS_IDLE) &&
-      (p->incoming_conn.state == BS_IDLE))
-    bgp_down(p);
 }
 
 static struct bgp_proto *
@@ -528,7 +529,6 @@ bgp_stop(struct bgp_proto *p, int subcode, byte *data, uint len)
   proto_notify_state(&p->p, PS_STOP);
   bgp_graceful_close_conn(&p->outgoing_conn, subcode, data, len);
   bgp_graceful_close_conn(&p->incoming_conn, subcode, data, len);
-  ev_schedule(p->event);
 }
 
 static inline void
@@ -1496,7 +1496,7 @@ bgp_start_locked(struct object_lock *lock)
     /* As we do not start yet, we can just disable protocol */
     p->p.disabled = 1;
     bgp_store_error(p, NULL, BE_MISC, BEM_INVALID_NEXT_HOP);
-    proto_notify_state(&p->p, PS_DOWN);
+    proto_notify_state(&p->p, PS_STOP);
     return;
   }
 
@@ -1593,7 +1593,7 @@ bgp_start(struct proto *P)
 
 extern int proto_restart;
 
-static int
+static void
 bgp_shutdown(struct proto *P)
 {
   struct bgp_proto *p = (struct bgp_proto *) P;
@@ -1674,7 +1674,6 @@ bgp_shutdown(struct proto *P)
 
 done:
   bgp_stop(p, subcode, data, len);
-  return p->p.proto_state;
 }
 
 static struct proto *
@@ -2568,6 +2567,7 @@ struct protocol proto_bgp = {
   .init = 		bgp_init,
   .start = 		bgp_start,
   .shutdown = 		bgp_shutdown,
+  .cleanup =		bgp_down,
   .reconfigure = 	bgp_reconfigure,
   .copy_config = 	bgp_copy_config,
   .get_status = 	bgp_get_status,

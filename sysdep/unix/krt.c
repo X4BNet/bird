@@ -149,7 +149,7 @@ kif_start(struct proto *P)
   return PS_UP;
 }
 
-static int
+static void
 kif_shutdown(struct proto *P)
 {
   struct kif_proto *p = (struct kif_proto *) P;
@@ -157,8 +157,6 @@ kif_shutdown(struct proto *P)
   tm_stop(kif_scan_timer);
   kif_sys_shutdown(p);
   kif_proto = NULL;
-
-  return PS_DOWN;
 }
 
 static int
@@ -605,7 +603,7 @@ ignore:
 
   /* Synchronously refeed from out_table */
   p->resync_rte = e;
-  rt_refeed_channel_net(p->p.main_channel, e->net);
+  rt_refeed_channel_net(p->p.main_channel, NULL, e->net);
   p->resync_rte = NULL;
 
   if (!e->id)
@@ -778,8 +776,10 @@ krt_scan_timer_kick(struct krt_proto *p)
 static int
 krt_preexport(struct channel *c, rte *e)
 {
+#ifndef CONFIG_SINGLE_ROUTE
   if (e->src->proto == c->proto)
     return -1;
+#endif
 
   if (!krt_capable(e))
     return -1;
@@ -806,9 +806,10 @@ krt_rt_notify(struct proto *P, struct channel *ch UNUSED, const net_addr *net,
    * but if we processed the update as usual, we would send withdraw to the
    * kernel, which would remove the new imported route instead.
    */
-  struct rte_storage *best = net->routes;
-  if (!new && best && (best->src->proto == P))
+  if (new && (new->src->proto == P))
     return;
+#else
+  ASSERT_DIE(!new || (new->src->proto != P));
 #endif
 
   if (!p->resync_rte)
@@ -984,7 +985,7 @@ krt_start(struct proto *P)
   return PS_UP;
 }
 
-static int
+static void
 krt_shutdown(struct proto *P)
 {
   struct krt_proto *p = (struct krt_proto *) P;
@@ -999,13 +1000,11 @@ krt_shutdown(struct proto *P)
   p->initialized = 0;
 
   if (p->p.proto_state == PS_START)
-    return PS_DOWN;
+    return;
 
   krt_sys_shutdown(p);
   rem_node(&p->krt_node);
   bmap_free(&p->sync_map);
-
-  return PS_DOWN;
 }
 
 static int

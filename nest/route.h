@@ -154,7 +154,9 @@ typedef struct rtable_private {
   char *name;				/* Name of this table */ \
   struct bsem *maint_sem;		/* Maintenance semaphore */ \
   _Atomic byte nhu_state;		/* Next Hop Update state */ \
+  _Atomic byte export_used;		/* Export journal cleanup scheduled */ \
   u8 internal;				/* 0 for main table, 1 for a protocol's private table */ \
+  struct rt_pending_export * _Atomic first_export;	/* First export to announce */ \
   union {				/* The table is a separate locking domain */ \
     DOMAIN(rtable) dom;			/* Domain for main table */ \
     DOMAIN(rtable_internal) idom;	/* Domain for internal table */ \
@@ -168,7 +170,7 @@ typedef struct rtable_private {
   struct fib fib;
   slab *rte_slab;			/* Slab for allocating routes */
   list channels;			/* List of attached channels (struct channel) */
-  int use_count;			/* Number of protocols using this table */
+  int use_count;			/* Number of channels and others using this table */
   u32 rt_count;				/* Number of routes in the table */
 
   struct hmap id_map;
@@ -184,14 +186,21 @@ typedef struct rtable_private {
   int gc_counter;			/* Number of operations since last GC */
 
   struct coroutine *maint_coro;		/* Maintenance coroutine */
+  linpool *maint_lp;			/* Maintenance linpool */
   byte prune_state;			/* Table prune state, 1 -> scheduled, 2-> running */
   byte hcu_scheduled;			/* Hostcache update is scheduled */
+  byte export_scheduled;		/* Export is scheduled */
 
   struct fib_iterator prune_fit;	/* Rtable prune FIB iterator */
   struct fib_iterator nhu_fit;		/* Next Hop Update FIB iterator */
 
   list subscribers;			/* Subscribers for notifications */
   struct timer *settle_timer;		/* Settle time for notifications */
+
+  list pending_exports;			/* List of packed struct rt_pending_export */
+
+  struct fib export_fib;		/* Auxiliary fib for storing pending exports */
+  u64 next_export_seq;			/* The next export will have this ID */
 } rtable_private;
 
 typedef union {
@@ -201,17 +210,9 @@ typedef union {
 
 #define RT_PRIV(tab)	(&((tab)->priv))
 
-/* 
 #define RT_INT(tab) ((tab)->internal)
 #define RT_LOCK(tab) (RT_INT(tab) ? LOCK_DOMAIN(rtable_internal, (tab)->idom) : LOCK_DOMAIN(rtable, (tab)->dom))
 #define RT_UNLOCK(tab) (RT_INT(tab) ? UNLOCK_DOMAIN(rtable_internal, (tab)->idom) : UNLOCK_DOMAIN(rtable, (tab)->dom))
-*/
-
-#define RT_LOCK(tab)
-#define RT_UNLOCK(tab)
-
-#define RT_LOCK_I(tab)		the_bird_lock()
-#define RT_UNLOCK_I(tab)	the_bird_unlock()
 
 
 struct rtable_config {
@@ -240,6 +241,10 @@ struct rt_subscription {
 #define NHU_RUNNING	2
 #define NHU_DIRTY	3
 
+#define RTFP_CLEAN	0
+#define RTFP_SCHEDULED	1
+#define RTFP_RUNNING	2
+
 typedef struct network {
   struct rte_storage *routes;			/* Available routes for this network */
   struct fib_node n;			/* FIB flags reserved for kernel syncer */
@@ -265,7 +270,7 @@ struct hostentry {
   rtable *tab;				/* Dependent table, part of key */
   struct hostentry *next;		/* Next in hash chain */
   unsigned hash_key;			/* Hash key */
-  unsigned uc;				/* Use count */
+  _Atomic unsigned uc_atomic;			/* Use count */
   struct rta *src;			/* Source rta entry */
   byte dest;				/* Chosen route destination type (RTD_...) */
   byte nexthop_linkable;		/* Nexthop list is completely non-device */
@@ -385,11 +390,11 @@ static inline net *net_get(rtable_private *tab, const net_addr *addr) { return (
 void *net_route(rtable_private *tab, const net_addr *n);
 int net_roa_check(rtable_private *tab, const net_addr *n, u32 asn);
 struct rte_storage *rte_find(net *net, struct rte_src *src);
-rte *rt_export_merged(struct channel *c, net *net, rte *best, linpool *pool, int silent);
 void rt_refresh_begin(rtable *t, struct channel *c);
 void rt_refresh_end(rtable *t, struct channel *c);
 void rt_modify_stale(rtable *t, struct channel *c);
 void rt_schedule_prune(rtable_private *t);
+void channel_export_coro(void *);
 void rte_dump(struct rte_storage *);
 void rte_free(rtable_private *, struct rte_storage *);
 struct rte_storage *rte_store(rtable_private *, const rte *, net *n);
@@ -403,10 +408,10 @@ void rt_feed_channel_abort(struct channel *c);
 int rt_reload_channel(struct channel *c);
 void rt_reload_channel_abort(struct channel *c);
 void rt_refeed_channel(struct channel *c, struct bmap *seen);
-void rt_refeed_channel_net(struct channel *c, const net_addr *n);
+void rt_refeed_channel_net(struct channel *c, linpool *lp, const net_addr *n);
 void rt_flush_channel(struct channel *c);
 void rt_prune_sync(rtable *t, int all);
-int rte_update_out(struct channel *c, rte *new, struct rte_storage *old, struct rte_storage **old_stored);
+int rte_update_out(struct channel *c, linpool *lp, rte *new, struct rte_storage *old, struct rte_storage **old_stored);
 struct rtable_config *rt_new_table(struct symbol *s, uint addr_type);
 
 /* Default limit for ECMP next hops, defined in sysdep code */
@@ -486,13 +491,13 @@ struct rte_src {
   struct proto *proto;			/* Protocol the source is based on */
   u32 private_id;			/* Private ID, assigned by the protocol */
   u32 global_id;			/* Globally unique ID of the source */
-  unsigned uc;				/* Use count */
+  _Atomic unsigned uc;			/* Use count */
 };
 
 
 typedef struct rta {
   struct rta *next, **pprev;		/* Hash chain */
-  u32 uc;				/* Use count */
+  _Atomic u32 uc_atomic;		/* Use count */
   u32 hash_key;				/* Hash over important fields */
   struct ea_list *eattrs;		/* Extended Attribute chain */
   struct hostentry *hostentry;		/* Hostentry for recursive next-hops */
@@ -627,11 +632,22 @@ typedef struct ea_list {
 #define EALF_BISECT 2			/* Use interval bisection for searching */
 #define EALF_CACHED 4			/* Attributes belonging to cached rta */
 
-struct rte_src *rt_find_source(struct proto *p, u32 id);
+/* These two calls must be always guarded by the_bird_lock.
+ *
+ * If you release the_bird_lock between obtaining a brand new rte_src
+ * and locking it by rt_lock_source() (e.g. inside rte_update()),
+ * you are at risk of having your rte_src pruned inbetween without further notice.
+ * It is recommended to lock the source or announce the route immediately after
+ * obtaining the rte_src.
+ * */
 struct rte_src *rt_get_source(struct proto *p, u32 id);
-static inline void rt_lock_source(struct rte_src *src) { src->uc++; }
-static inline void rt_unlock_source(struct rte_src *src) { src->uc--; }
 void rt_prune_sources(void);
+
+/* Locking and unlocking itself may anyway run unguarded themselves */
+static inline void rt_lock_source(struct rte_src *src)
+{ atomic_fetch_add_explicit(&src->uc, 1, memory_order_acq_rel); }
+static inline void rt_unlock_source(struct rte_src *src)
+{ atomic_fetch_sub_explicit(&src->uc, 1, memory_order_acq_rel); }
 
 struct ea_walk_state {
   ea_list *eattrs;			/* Ccurrent ea_list, initially set by caller */
@@ -721,9 +737,19 @@ static inline size_t rta_size(const rta *a) { return sizeof(rta) + sizeof(u32)*a
 #define RTA_MAX_SIZE (sizeof(rta) + sizeof(u32)*MPLS_MAX_LABEL_STACK)
 rta *rta_lookup(rta *);			/* Get rta equivalent to this one, uc++ */
 static inline int rta_is_cached(rta *r) { return r->cached; }
-static inline rta *rta_clone(rta *r) { r->uc++; return r; }
+static inline rta *rta_clone(rta *r)
+{
+  DBG("rta_clone(%p)\n", r);
+  atomic_fetch_add_explicit(&r->uc_atomic, 1, memory_order_acq_rel);
+  return r;
+}
 void rta__free(rta *r);
-static inline void rta_free(rta *r) { if (r && !--r->uc) rta__free(r); }
+static inline void rta_free(rta *r)
+{
+  DBG("rta_free(%p)\n", r);
+  if (r && (atomic_fetch_sub_explicit(&r->uc_atomic, 1, memory_order_acq_rel) == 1))
+    rta__free(r);
+}
 rta *rta_do_cow(rta *o, linpool *lp);
 static inline rta * rta_cow(rta *r, linpool *lp) { return rta_is_cached(r) ? rta_do_cow(r, lp) : r; }
 void rta_dump(rta *);
@@ -732,13 +758,7 @@ void rta_show(struct cli *, rta *);
 
 u32 rt_get_igp_metric(struct rta *);
 struct hostentry * rt_get_hostentry(rtable_private *tab, ip_addr a, ip_addr ll, rtable *dep);
-void rta_apply_hostentry(rta *a, struct hostentry *he, mpls_label_stack *mls);
-
-static inline void
-rta_set_recursive_next_hop(rtable *dep, rta *a, rtable_private *tab, ip_addr gw, ip_addr ll, mpls_label_stack *mls)
-{
-  rta_apply_hostentry(a, rt_get_hostentry(tab, gw, ll, dep), mls);
-}
+void rta_apply_hostentry(linpool *lp, rta *a, struct hostentry *he, mpls_label_stack *mls);
 
 /*
  * rta_set_recursive_next_hop() acquires hostentry from hostcache and fills
@@ -762,8 +782,25 @@ rta_set_recursive_next_hop(rtable *dep, rta *a, rtable_private *tab, ip_addr gw,
  * exist - they will be freed together with the 'source' table.
  */
 
-static inline void rt_lock_hostentry(struct hostentry *he) { if (he) he->uc++; }
-static inline void rt_unlock_hostentry(struct hostentry *he) { if (he) he->uc--; }
+static inline void rt_lock_hostentry(struct hostentry *he)
+{
+  if (he)
+  {
+    UNUSED uint uc = atomic_fetch_add_explicit(&he->uc_atomic, 1, memory_order_acq_rel);
+    DBG("rt_lock_hostentry(addr=%I link=%I dep=%s uc=%u)\n",
+	    he->addr, he->link, he->tab->name, uc+1);
+  }
+}
+
+static inline void rt_unlock_hostentry(struct hostentry *he)
+{
+  if (he)
+  {
+    UNUSED uint uc = atomic_fetch_sub_explicit(&he->uc_atomic, 1, memory_order_acq_rel);
+    DBG("rt_unlock_hostentry(addr=%I link=%I dep=%s uc=%u)\n",
+	he->addr, he->link, he->tab->name, uc-1);
+  }
+}
 
 /*
  *	Default protocol preferences

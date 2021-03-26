@@ -614,7 +614,7 @@ radv_iface_shutdown(struct radv_iface *ifa)
   }
 }
 
-static int
+static void
 radv_shutdown(struct proto *P)
 {
   struct radv_proto *p = (struct radv_proto *) P;
@@ -624,8 +624,6 @@ radv_shutdown(struct proto *P)
   struct radv_iface *ifa;
   WALK_LIST(ifa, p->iface_list)
     radv_iface_shutdown(ifa);
-
-  return PS_DOWN;
 }
 
 static int
@@ -651,7 +649,9 @@ radv_reconfigure(struct proto *P, struct proto_config *CF)
   if (radv_trigger_valid(new))
   {
     /* Refeed the appropriate route */
-    rt_refeed_channel_net(p->p.main_channel, &new->trigger);
+    linpool *lp = lp_new_default(p->p.pool);
+    rt_refeed_channel_net(p->p.main_channel, lp, &new->trigger);
+    rfree(lp);
 
     /* We were active before but no trigger route has been refeeded */
     if (old_active && p->reconf_trigger)
@@ -672,7 +672,11 @@ radv_reconfigure(struct proto *P, struct proto_config *CF)
 
   /* Or refeed at least the old trigger route */
   else if (new->propagate_routes && radv_trigger_valid(old))
-    rt_refeed_channel_net(p->p.main_channel, &old->trigger);
+  {
+    linpool *lp = lp_new_default(p->p.pool);
+    rt_refeed_channel_net(p->p.main_channel, lp, &old->trigger);
+    rfree(lp);
+  }
 
   struct iface *iface;
   WALK_LIST(iface, iface_list)

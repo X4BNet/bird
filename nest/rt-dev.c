@@ -54,6 +54,10 @@ dev_ifa_notify(struct proto *P, uint flags, struct ifa *ad)
   if (!c)
     return;
 
+  /* Ignore notifications when not up */
+  if (c->channel_state != CS_UP)
+    return;
+
   /* For IPv6 SADR, replace regular prefix with SADR prefix */
   if (c->net_type == NET_IP6_SADR)
   {

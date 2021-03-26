@@ -137,6 +137,10 @@ rip_announce_rte(struct rip_proto *p, struct rip_entry *en)
 {
   struct rip_rte *rt = en->routes;
 
+  /* May be accidentally called when the channel is flushing. */
+  if (p->p.main_channel->channel_state != CS_UP)
+    return;
+
   /* Find first valid rte */
   while (rt && !rip_valid_rte(rt))
     rt = rt->next;
@@ -1143,7 +1147,7 @@ rip_start(struct proto *P)
   return PS_UP;
 }
 
-static int
+static void
 rip_shutdown(struct proto *P)
 {
   struct rip_proto *p = (void *) P;
@@ -1153,8 +1157,6 @@ rip_shutdown(struct proto *P)
   struct rip_iface *ifa;
   WALK_LIST(ifa, p->iface_list)
     rip_iface_stop(ifa);
-
-  return PS_DOWN;
 }
 
 static int

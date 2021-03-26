@@ -140,12 +140,15 @@ static struct resclass coro_class = {
   .free = coro_free,
 };
 
+_Thread_local struct coroutine *this_coro = NULL;
 extern pthread_key_t current_time_key;
 
 static void *coro_entry(void *p)
 {
   struct coroutine *c = p;
   ASSERT_DIE(c->entry);
+
+  this_coro = c;
 
   pthread_setspecific(current_time_key, &main_timeloop);
 
@@ -220,4 +223,10 @@ void bsem_wait(struct bsem *b) {
       return bsem_wait(b);
     else
       bug("sem_wait() failed: %m");
+}
+
+void bsem_wait_all(struct bsem *b) {
+  bsem_wait(b);
+  while (sem_trywait(&b->sem) == 0)
+    ;
 }

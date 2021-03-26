@@ -62,7 +62,7 @@ pipe_rt_notify(struct proto *P, struct channel *src_ch, const net_addr *n, rte *
       memcpy(a, new->attrs, rta_size(new->attrs));
 
       a->cached = 0;
-      a->uc = 0;
+      atomic_store_explicit(&a->uc_atomic, 0, memory_order_relaxed);
       a->hostentry = NULL;
 
       rte e0 = {
@@ -288,7 +288,14 @@ pipe_show_stats(struct pipe_proto *p)
 	  s2->imp_withdraws_ignored, s2->imp_withdraws_accepted);
 }
 
-static const char *pipe_feed_state[] = { [ES_DOWN] = "down", [ES_FEEDING] = "feed", [ES_READY] = "up" };
+static const char *pipe_feed_state[] = {
+  [ES_DOWN] = "down",
+  [ES_HUNGRY] = "feed pending",
+  [ES_FEEDING] = "feed running",
+  [ES_READY] = "up",
+  [ES_STOP] = "stopping",
+  [ES_RESTART] = "restart",
+};
 
 static void
 pipe_show_proto_info(struct proto *P)
@@ -298,8 +305,8 @@ pipe_show_proto_info(struct proto *P)
   cli_msg(-1006, "  Channel %s", "main");
   cli_msg(-1006, "    Table:          %s", p->pri->table->name);
   cli_msg(-1006, "    Peer table:     %s", p->sec->table->name);
-  cli_msg(-1006, "    Import state:   %s", pipe_feed_state[p->sec->export_state]);
-  cli_msg(-1006, "    Export state:   %s", pipe_feed_state[p->pri->export_state]);
+  cli_msg(-1006, "    Import state:   %s", pipe_feed_state[atomic_load_explicit(&p->sec->export_state, memory_order_acquire)]);
+  cli_msg(-1006, "    Export state:   %s", pipe_feed_state[atomic_load_explicit(&p->pri->export_state, memory_order_acquire)]);
   cli_msg(-1006, "    Import filter:  %s", filter_name(p->sec->out_filter));
   cli_msg(-1006, "    Export filter:  %s", filter_name(p->pri->out_filter));
 

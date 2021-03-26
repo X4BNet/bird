@@ -35,4 +35,7 @@ void bsem_post(struct bsem *);
 /* Wait for a semaphore. Never do this within a locked context. */
 void bsem_wait(struct bsem *);
 
+/* Wait for a semaphore and consume all the wakeups at once. */
+void bsem_wait_all(struct bsem *);
+
 #endif

@@ -15,6 +15,7 @@
 #include "lib/event.h"
 #include "lib/timer.h"
 #include "lib/string.h"
+#include "lib/coro.h"
 #include "conf/conf.h"
 #include "nest/route.h"
 #include "nest/iface.h"
@@ -44,7 +45,7 @@ static u32 graceful_restart_locks;
 
 static char *p_states[] = { "DOWN", "START", "UP", "STOP" };
 static char *c_states[] = { "DOWN", "START", "UP", "FLUSHING" };
-static char *e_states[] = { "DOWN", "FEEDING", "READY" };
+static char *e_states[] = { "DOWN", "HUNGRY", "FEEDING", "READY", "STOP", "RESTART" };
 
 extern struct protocol proto_unix_iface;
 
@@ -55,9 +56,12 @@ static char *proto_state_name(struct proto *p);
 static void channel_verify_limits(struct channel *c);
 static inline void channel_reset_limit(struct channel_limit *l);
 
+static inline int proto_is_stopped(struct proto *p)
+{ return (p->proto_state == PS_STOP) && (p->active_channels == 0); }
 
 static inline int proto_is_done(struct proto *p)
-{ return (p->proto_state == PS_DOWN) && (p->active_channels == 0); }
+{ return (p->proto_state == PS_DOWN) && (p->active_channels == 0)
+  && (atomic_load_explicit(&p->src_count, memory_order_acquire) == 0); }
 
 static inline int channel_is_active(struct channel *c)
 { return (c->channel_state == CS_START) || (c->channel_state == CS_UP); }
@@ -65,13 +69,11 @@ static inline int channel_is_active(struct channel *c)
 static inline int channel_reloadable(struct channel *c)
 { return c->proto->reload_routes && c->reloadable; }
 
-static inline void
+void
 channel_log_state_change(struct channel *c)
 {
-  if (c->export_state)
-    CD(c, "State changed to %s/%s", c_states[c->channel_state], e_states[c->export_state]);
-  else
-    CD(c, "State changed to %s", c_states[c->channel_state]);
+  CD(c, "State changed to %s/%s", c_states[c->channel_state],
+      e_states[atomic_load_explicit(&c->export_state, memory_order_acquire)]);
 }
 
 static void
@@ -181,7 +183,7 @@ proto_add_channel(struct proto *p, struct channel_config *cf)
   c->rpki_reload = cf->rpki_reload;
 
   c->channel_state = CS_DOWN;
-  c->export_state = ES_DOWN;
+  atomic_store_explicit(&c->export_state, ES_DOWN, memory_order_release);
   c->last_state_change = current_time();
   c->reloadable = 1;
 
@@ -249,64 +251,21 @@ channel_schedule_feed(struct channel *c, int initial)
   // DBG("%s: Scheduling meal\n", p->name);
   ASSERT(c->channel_state == CS_UP);
 
-  c->export_state = ES_FEEDING;
+  DBG("Scheduling %sfeed for %s.%s from table %s\n",
+      initial ? "initial " : "re",
+      c->proto->name, c->name, c->table->name);
+
+  atomic_store_explicit(&c->export_state, ES_HUNGRY, memory_order_release);
   c->refeeding = !initial;
 
-  ev_schedule_work(c->feed_event);
+  if (initial)
+  {
+    ASSERT(c->export_coro == NULL);
+    c->export_coro = coro_run(c->proto->pool, channel_export_coro, c);
+  }
+  else
+    bsem_post(c->export_sem);
 }
-
-static void
-channel_feed_loop(void *ptr)
-{
-  struct channel *c = ptr;
-
-  if (c->export_state != ES_FEEDING)
-    return;
-
-  /* Start feeding */
-  if (!c->feed_active)
-  {
-    if (c->proto->feed_begin)
-      c->proto->feed_begin(c, !c->refeeding);
-
-    c->refeed_pending = 0;
-  }
-
-  // DBG("Feeding protocol %s continued\n", p->name);
-  if (!rt_feed_channel(c))
-  {
-    ev_schedule_work(c->feed_event);
-    return;
-  }
-
-  /* Reset export limit if the feed ended with acceptable number of exported routes */
-  struct channel_limit *l = &c->out_limit;
-  if (c->refeeding &&
-      (l->state == PLS_BLOCKED) &&
-      (c->refeed_count <= l->limit) &&
-      (c->stats.exp_routes <= l->limit))
-  {
-    log(L_INFO "Protocol %s resets route export limit (%u)", c->proto->name, l->limit);
-    channel_reset_limit(&c->out_limit);
-
-    /* Continue in feed - it will process routing table again from beginning */
-    c->refeed_count = 0;
-    ev_schedule_work(c->feed_event);
-    return;
-  }
-
-  // DBG("Feeding protocol %s finished\n", p->name);
-  c->export_state = ES_READY;
-  channel_log_state_change(c);
-
-  if (c->proto->feed_end)
-    c->proto->feed_end(c);
-
-  /* Restart feeding */
-  if (c->refeed_pending)
-    channel_request_feeding(c);
-}
-
 
 static void
 channel_roa_in_changed(struct rt_subscription *s)
@@ -326,7 +285,8 @@ static void
 channel_roa_out_changed(struct rt_subscription *s)
 {
   struct channel *c = s->data;
-  int active = (c->export_state == ES_FEEDING);
+  uint es = atomic_load_explicit(&c->export_state, memory_order_acquire);
+  int active = (es == ES_FEEDING) || (es == ES_HUNGRY);
 
   CD(c, "Feeding triggered by RPKI change%s", active ? " - already active" : "");
 
@@ -448,24 +408,67 @@ static void
 channel_start_export(struct channel *c)
 {
   ASSERT(c->channel_state == CS_UP);
-  ASSERT(c->export_state == ES_DOWN);
+  ASSERT(atomic_load_explicit(&c->export_state, memory_order_acquire) == ES_DOWN);
 
-  channel_schedule_feed(c, 1);	/* Sets ES_FEEDING */
+  c->export_sem = bsem_new(c->proto->pool);
+
+  channel_schedule_feed(c, 1);	/* Sets ES_HUNGRY */
 }
 
-static void
-channel_stop_export(struct channel *c)
+void
+channel_export_stopped(struct channel *c)
 {
-  /* Need to abort feeding */
-  if (c->export_state == ES_FEEDING)
-    rt_feed_channel_abort(c);
+  uint state;
+  uint es = atomic_load_explicit(&c->export_state, memory_order_acquire);
+  switch (es)
+  {
+    case ES_STOP:
+      state = CS_FLUSHING;
+      break;
+    case ES_RESTART:
+      state = CS_START;
+      break;
+    default:
+      bug("Stopping %s.%s export with invalid state %d", c->proto->name, c->name, es);
+  }
 
-  c->export_state = ES_DOWN;
   c->stats.exp_routes = 0;
   bmap_reset(&c->export_map, 1024);
   bmap_reset(&c->export_reject_map, 1024);
+
+  rfree(c->export_sem);
+  c->export_sem = NULL;
+
+  atomic_store_explicit(&c->export_state, ES_DOWN, memory_order_release);
+
+  channel_set_state(c, state);
 }
 
+static void
+channel_stop_export(struct channel *c, uint state)
+{
+  DBG("Channel %s.%s must stop exports to reach state %s\n",
+      c->proto->name, c->name, c_states[state]);
+
+  ASSERT_DIE(atomic_load_explicit(&c->export_state, memory_order_acquire) != ES_DOWN);
+
+  /* Wait for the export coroutine to stop. */
+  ASSERT_DIE(c->export_coro);
+
+  switch (state)
+  {
+    case CS_FLUSHING:
+      atomic_store_explicit(&c->export_state, ES_STOP, memory_order_release);
+      break;
+    case CS_START:
+      atomic_store_explicit(&c->export_state, ES_RESTART, memory_order_release);
+      break;
+    default:
+      bug("Requesting %s.%s export stop with invalid state %d", c->proto->name, c->name, state);
+  }
+
+  bsem_post(c->export_sem);
+}
 
 /* Called by protocol for reload from in_table */
 void
@@ -557,8 +560,6 @@ channel_do_start(struct channel *c)
   }
   RT_UNLOCK(c->table);
 
-  c->feed_event = ev_new_init(c->proto->pool, channel_feed_loop, c);
-
   bmap_init(&c->export_map, c->proto->pool, 1024);
   bmap_init(&c->export_reject_map, c->proto->pool, 1024);
   memset(&c->stats, 0, sizeof(struct proto_stats));
@@ -607,7 +608,7 @@ channel_do_flush(struct channel *c)
 static void
 channel_do_down(struct channel *c)
 {
-  ASSERT(!c->feed_active && !c->reload_active);
+  ASSERT(!c->export_coro && !c->reload_active);
 
   RT_LOCK(c->table);
   {
@@ -632,23 +633,26 @@ channel_do_down(struct channel *c)
 
   CALL(c->channel->cleanup, c);
 
-  if ((c->proto->proto_state == PS_STOP) && (c->proto->active_channels == 0))
+  if (proto_is_stopped(c->proto))
     proto_notify_state(c->proto, PS_DOWN);
-
-  /* Schedule protocol shutddown */
-  if (proto_is_done(c->proto))
-    ev_schedule(c->proto->event);
 }
 
 void
 channel_set_state(struct channel *c, uint state)
 {
   uint cs = c->channel_state;
-  uint es = c->export_state;
+  uint es = atomic_load_explicit(&c->export_state, memory_order_acquire);
 
   DBG("%s reporting channel %s state transition %s -> %s\n", c->proto->name, c->name, c_states[cs], c_states[state]);
   if (state == cs)
     return;
+
+  if (es != ES_DOWN)
+  {
+    ASSERT_DIE(c->channel_state == CS_UP);
+    channel_stop_export(c, state);
+    return;
+  }
 
   c->channel_state = state;
   c->last_state_change = current_time();
@@ -660,9 +664,6 @@ channel_set_state(struct channel *c, uint state)
 
     if (cs == CS_DOWN)
       channel_do_start(c);
-
-    if (es != ES_DOWN)
-      channel_stop_export(c);
 
     if (c->in_table && (cs == CS_UP))
       channel_reset_import(c);
@@ -686,9 +687,6 @@ channel_set_state(struct channel *c, uint state)
 
   case CS_FLUSHING:
     ASSERT(cs == CS_START || cs == CS_UP);
-
-    if (es != ES_DOWN)
-      channel_stop_export(c);
 
     if (c->in_table && (cs == CS_UP))
       channel_reset_import(c);
@@ -729,25 +727,24 @@ channel_request_feeding(struct channel *c)
 
   CD(c, "Feeding requested");
 
-  /* Do nothing if we are still waiting for feeding */
-  if (c->export_state == ES_DOWN)
-    return;
-
-  /* If we are already feeding, we want to restart it */
-  if (c->export_state == ES_FEEDING)
+  uint es;
+  switch (es = atomic_load_explicit(&c->export_state, memory_order_acquire))
   {
-    /* Unless feeding is in initial state */
-    if (!c->feed_active)
-	return;
+    case ES_DOWN:
+    case ES_HUNGRY:
+    case ES_RESTART:
+    case ES_STOP:
+      return;
 
-    rt_feed_channel_abort(c);
+    case ES_FEEDING:
+    case ES_READY:
+      channel_schedule_feed(c, 0);
+      channel_log_state_change(c);
+      return;
+
+    default:
+      bug("Strange export state of %s.%s when feeding requested: %d", c->proto->name, c->name, es);
   }
-
-  /* Track number of exported routes during refeed */
-  c->refeed_count = 0;
-
-  channel_schedule_feed(c, 0);	/* Sets ES_FEEDING */
-  channel_log_state_change(c);
 }
 
 static void
@@ -988,12 +985,25 @@ proto_event(void *ptr)
     if (p->proto == &proto_unix_iface)
       if_flush_ifaces(p);
     p->do_stop = 0;
+
+    if (proto_is_stopped(p))
+      proto_notify_state(p, PS_DOWN);
   }
 
   if (proto_is_done(p))
   {
-    if (p->proto->cleanup)
-      p->proto->cleanup(p);
+    if (p->proto->cleanup && !p->proto->cleanup(p))
+    {
+      /* The protocol failed to cleanup, we'll try again. */
+      debug("Will retry protocol %s cleanup\n", p->name);
+      ev_schedule(p->event);
+      return;
+    }
+
+    debug("Protocol %s finally done\n", p->name);
+
+    rfree(p->pool);
+    p->pool = NULL;
 
     p->active = 0;
     proto_log_state_change(p);
@@ -1439,14 +1449,14 @@ proto_rethink_goal(struct proto *p)
       PD(p, "Shutting down");
 
       /* First call the shutdown hook */
-      byte down_state = p->proto->shutdown ? p->proto->shutdown(p) : PS_DOWN;
+      if (p->proto->shutdown)
+	p->proto->shutdown(p);
 
-      /* Then we need to transition to PS_STOP anyway to stop channels */
-      proto_notify_state(p, PS_STOP);
-
-      /* If there is no channel remaining and the protocol also agrees, we may proceed */
-      if ((down_state == PS_DOWN) && (p->active_channels == 0))
-	proto_notify_state(p, PS_DOWN);
+      /* Unless the hook itself pushed us directly to PS_DOWN,
+       * which is possible in some cases, we should first stop channels
+       * by setting PS_STOP. */
+      if (p->proto_state != PS_DOWN)
+	proto_notify_state(p, PS_STOP);
     }
   }
 }
@@ -1660,6 +1670,8 @@ protos_dump_all(void)
 	debug("\tInput filter: %s\n", filter_name(c->in_filter));
       if (c->out_filter)
 	debug("\tOutput filter: %s\n", filter_name(c->out_filter));
+      debug("\tChannel state: %s/%s\n", c_states[c->channel_state],
+	  e_states[atomic_load_explicit(&c->export_state, memory_order_acquire)]);
     }
 
     if (p->proto->dump && (p->proto_state != PS_DOWN))
@@ -1887,13 +1899,6 @@ channel_verify_limits(struct channel *c)
 }
 
 static inline void
-channel_reset_limit(struct channel_limit *l)
-{
-  if (l->action)
-    l->state = PLS_INITIAL;
-}
-
-static inline void
 proto_do_start(struct proto *p)
 {
   p->active = 1;
@@ -1927,13 +1932,10 @@ proto_do_stop(struct proto *p)
   p->do_stop = 1;
   ev_schedule(p->event);
 
-  if (p->main_source)
-  {
-    rt_unlock_source(p->main_source);
-    p->main_source = NULL;
-  }
-
   proto_stop_channels(p);
+
+  if (proto_is_stopped(p))
+    proto_notify_state(p, PS_DOWN);
 }
 
 static void
@@ -1941,8 +1943,14 @@ proto_do_down(struct proto *p)
 {
   p->down_code = 0;
   neigh_prune();
-  rfree(p->pool);
-  p->pool = NULL;
+
+  if (p->main_source)
+  {
+    rt_unlock_source(p->main_source);
+    p->main_source = NULL;
+
+    rt_prune_sources();
+  }
 
   /* Shutdown is finished in the protocol event */
   if (proto_is_done(p))
@@ -2076,6 +2084,7 @@ channel_show_info(struct channel *c)
 {
   cli_msg(-1006, "  Channel %s", c->name);
   cli_msg(-1006, "    State:          %s", c_states[c->channel_state]);
+  cli_msg(-1006, "    Export state:   %s", e_states[atomic_load_explicit(&c->export_state, memory_order_acquire)]);
   cli_msg(-1006, "    Table:          %s", c->table->name);
   cli_msg(-1006, "    Preference:     %d", c->preference);
   cli_msg(-1006, "    Input filter:   %s", filter_name(c->in_filter));

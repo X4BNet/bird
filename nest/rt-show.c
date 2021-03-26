@@ -129,7 +129,7 @@ rt_show_net(struct cli *c, net *n, struct rt_show_data *d)
       struct rte e = rte_copy(er);
 
       /* Export channel is down, do not try to export routes to it */
-      if (ec && (ec->export_state == ES_DOWN))
+      if (ec && (atomic_load_explicit(&ec->export_state, memory_order_acquire) == ES_DOWN))
 	goto skip;
 
       if (d->export_mode == RSEM_EXPORTED)
@@ -140,14 +140,7 @@ rt_show_net(struct cli *c, net *n, struct rt_show_data *d)
 	  // if (ec->ra_mode != RA_ANY)
 	  //   pass = 1;
         }
-      else if ((d->export_mode == RSEM_EXPORT) && (ec->ra_mode == RA_MERGED))
-	{
-	  /* Special case for merged export */
-	  pass = 1;
-	  if (!rt_export_merged(ec, n, &e, c->show_pool, 1))
-	    goto skip;
-	}
-      else if (d->export_mode)
+      else if (d->export_mode && (ec->out_table != d->tab->table))
 	{
 	  struct proto *ep = ec->proto;
 	  int ic = ep->preexport ? ep->preexport(ec, &e) : 0;
@@ -332,7 +325,7 @@ rt_show_get_default_tables(struct rt_show_data *d)
   {
     WALK_LIST(c, d->export_protocol->channels)
     {
-      if (c->export_state == ES_DOWN)
+      if (atomic_load_explicit(&c->export_state, memory_order_acquire) == ES_DOWN)
 	continue;
 
       tab = rt_show_add_table(d, c->table);
@@ -381,6 +374,12 @@ rt_show_prepare_tables(struct rt_show_data *d)
 
 	rem_node(&(tab->n));
 	continue;
+      }
+
+      if ((d->export_mode == RSEM_EXPORT) && (tab->export_channel->ra_mode == RA_MERGED))
+      {
+	ASSERT_DIE(tab->export_channel->out_table);
+	tab->table = tab->export_channel->out_table;
       }
     }
 
@@ -432,7 +431,7 @@ rt_show(struct rt_show_data *d)
     WALK_LIST(tab, d->tables)
     {
       RT_LOCK(tab->table);
-      d->tab_priv = RT_PRIV(d->tab->table);
+      d->tab_priv = RT_PRIV(tab->table);
 
       d->tab = tab;
       d->kernel = rt_show_get_kernel(d);

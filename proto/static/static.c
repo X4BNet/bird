@@ -91,12 +91,16 @@ static_announce_rte(struct static_proto *p, struct static_route *r)
     nexthop_link(a, nhs);
   }
 
+  struct hostentry *he = NULL;
   if (r->dest == RTDX_RECURSIVE)
   {
     rtable *tab = ipa_is_ip4(r->via) ? p->igp_table_ip4 : p->igp_table_ip6;
     RT_LOCK(tab);
-    rta_set_recursive_next_hop(p->p.main_channel->table, a, RT_PRIV(tab), r->via, IPA_NONE, r->mls);
+    he = rt_get_hostentry(RT_PRIV(tab), r->via, IPA_NONE, p->p.main_channel->table);
+    rt_lock_hostentry(he);
     RT_UNLOCK(tab);
+
+    rta_apply_hostentry(static_lp, a, he, r->mls);
   }
 
   /* Already announced */
@@ -114,6 +118,9 @@ static_announce_rte(struct static_proto *p, struct static_route *r)
 
   rte_update(p->p.main_channel, &e0);
   r->state = SRS_CLEAN;
+
+  if (he)
+    rt_unlock_hostentry(he);
 
   if (r->cmds)
     lp_flush(static_lp);
@@ -507,7 +514,7 @@ static_start(struct proto *P)
   return PS_UP;
 }
 
-static int
+static void
 static_shutdown(struct proto *P)
 {
   struct static_proto *p = (void *) P;
@@ -517,11 +524,9 @@ static_shutdown(struct proto *P)
   /* Just reset the flag, the routes will be flushed by the nest */
   WALK_LIST(r, cf->routes)
     static_reset_rte(p, r);
-
-  return PS_DOWN;
 }
 
-static void
+static _Bool
 static_cleanup(struct proto *P)
 {
   struct static_proto *p = (void *) P;
@@ -539,6 +544,8 @@ static_cleanup(struct proto *P)
     rt_unlock_table(RT_PRIV(p->igp_table_ip6));
     RT_UNLOCK(p->igp_table_ip6);
   }
+
+  return 1;
 }
 
 static void

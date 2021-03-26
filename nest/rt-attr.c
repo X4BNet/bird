@@ -44,6 +44,8 @@
  * Routing tables always contain only cached &rta's.
  */
 
+#undef LOCAL_DEBUG
+
 #include "nest/bird.h"
 #include "nest/route.h"
 #include "nest/protocol.h"
@@ -85,7 +87,14 @@ const char * rta_dest_names[RTD_MAX] = {
   [RTD_PROHIBIT]	= "prohibited",
 };
 
+DEFINE_DOMAIN(rt_attr);
+static DOMAIN(rt_attr) rta_domain;
+
+#define RTA_LOCK LOCK_DOMAIN(rt_attr, rta_domain)
+#define RTA_UNLOCK UNLOCK_DOMAIN(rt_attr, rta_domain)
+
 pool *rta_pool;
+pool *rte_src_pool;
 
 static slab *rta_slab_[4];
 static slab *nexthop_slab_[4];
@@ -110,17 +119,19 @@ static HASH(struct rte_src) src_hash;
 static void
 rte_src_init(void)
 {
-  rte_src_slab = sl_new(rta_pool, sizeof(struct rte_src));
+  rte_src_pool = rp_new(&root_pool, "Route sources");
 
-  idm_init(&src_ids, rta_pool, SRC_ID_INIT_SIZE);
+  rte_src_slab = sl_new(rte_src_pool, sizeof(struct rte_src));
 
-  HASH_INIT(src_hash, rta_pool, RSH_INIT_ORDER);
+  idm_init(&src_ids, rte_src_pool, SRC_ID_INIT_SIZE);
+
+  HASH_INIT(src_hash, rte_src_pool, RSH_INIT_ORDER);
 }
 
 
 HASH_DEFINE_REHASH_FN(RSH, struct rte_src)
 
-struct rte_src *
+static inline struct rte_src *
 rt_find_source(struct proto *p, u32 id)
 {
   return HASH_FIND(src_hash, RSH, p, id);
@@ -129,6 +140,8 @@ rt_find_source(struct proto *p, u32 id)
 struct rte_src *
 rt_get_source(struct proto *p, u32 id)
 {
+  ASSERT_DIE(p->proto_state == PS_UP);
+
   struct rte_src *src = rt_find_source(p, id);
 
   if (src)
@@ -136,11 +149,12 @@ rt_get_source(struct proto *p, u32 id)
 
   src = sl_allocz(rte_src_slab);
   src->proto = p;
+  atomic_fetch_add_explicit(&src->proto->src_count, 1, memory_order_acq_rel);
   src->private_id = id;
   src->global_id = idm_alloc(&src_ids);
   src->uc = 0;
 
-  HASH_INSERT2(src_hash, RSH, rta_pool, src);
+  HASH_INSERT2(src_hash, RSH, rte_src_pool, src);
 
   return src;
 }
@@ -150,8 +164,10 @@ rt_prune_sources(void)
 {
   HASH_WALK_FILTER(src_hash, next, src, sp)
   {
-    if (src->uc == 0)
+    if (atomic_load_explicit(&src->uc, memory_order_acquire) == 0)
     {
+      if (atomic_fetch_sub_explicit(&src->proto->src_count, 1, memory_order_acq_rel) == 1)
+	ev_schedule(src->proto->event);
       HASH_DO_REMOVE(src_hash, RSH, sp);
       idm_free(&src_ids, src->global_id);
       sl_free(rte_src_slab, src);
@@ -159,7 +175,7 @@ rt_prune_sources(void)
   }
   HASH_WALK_FILTER_END;
 
-  HASH_MAY_RESIZE_DOWN(src_hash, RSH, rta_pool);
+  HASH_MAY_RESIZE_DOWN(src_hash, RSH, rte_src_pool);
 }
 
 
@@ -1141,7 +1157,7 @@ rta_copy(rta *o)
   rta *r = sl_alloc(rta_slab(o));
 
   memcpy(r, o, rta_size(o));
-  r->uc = 1;
+  atomic_store_explicit(&r->uc_atomic, 1, memory_order_release);
   r->nh.next = nexthop_copy(o->nh.next);
   r->eattrs = ea_list_copy(o->eattrs);
   return r;
@@ -1202,11 +1218,18 @@ rta_lookup(rta *o)
     ea_normalize(o->eattrs);
 
   h = rta_hash(o);
+
+  RTA_LOCK;
+
   for(r=rta_hash_table[h & rta_cache_mask]; r; r=r->next)
     if (r->hash_key == h && rta_same(r, o))
+    {
+      RTA_UNLOCK;
       return rta_clone(r);
+    }
 
   r = rta_copy(o);
+  DBG("rta_copy(%p)\n", r);
   r->hash_key = h;
   r->cached = 1;
   rt_lock_hostentry(r->hostentry);
@@ -1215,13 +1238,21 @@ rta_lookup(rta *o)
   if (++rta_cache_count > rta_cache_limit)
     rta_rehash();
 
+  RTA_UNLOCK;
   return r;
 }
 
 void
 rta__free(rta *a)
 {
+  RTA_LOCK;
+  DBG("rta__free(%p)\n", a);
   ASSERT(rta_cache_count && a->cached);
+  if (atomic_load_explicit(&a->uc_atomic, memory_order_acquire))
+  {
+    RTA_UNLOCK;
+    return;
+  }
   rta_cache_count--;
   *a->pprev = a->next;
   if (a->next)
@@ -1232,6 +1263,7 @@ rta__free(rta *a)
   ea_free(a->eattrs);
   a->cached = 0;
   sl_free(rta_slab(a), a);
+  RTA_UNLOCK;
 }
 
 rta *
@@ -1246,7 +1278,7 @@ rta_do_cow(rta *o, linpool *lp)
       nhn = &((*nhn)->next);
     }
   r->cached = 0;
-  r->uc = 0;
+  atomic_store_explicit(&r->uc_atomic, 0, memory_order_release);
   return r;
 }
 
@@ -1263,14 +1295,20 @@ rta_dump(rta *a)
 			 "RTS_STAT_DEV", "RTS_REDIR", "RTS_RIP",
 			 "RTS_OSPF", "RTS_OSPF_IA", "RTS_OSPF_EXT1",
 			 "RTS_OSPF_EXT2", "RTS_BGP", "RTS_PIPE", "RTS_BABEL" };
-  static char *rtd[] = { "", " DEV", " HOLE", " UNREACH", " PROHIBIT" };
+  static char *rtd[] = { "", " UNICAST", " HOLE", " UNREACH", " PROHIBIT" };
 
   debug("pref=%d uc=%d %s %s%s h=%04x",
-	a->pref, a->uc, rts[a->source], ip_scope_text(a->scope),
+	a->pref, atomic_load_explicit(&a->uc_atomic, memory_order_acquire), rts[a->source], ip_scope_text(a->scope),
 	rtd[a->dest], a->hash_key);
   if (!a->cached)
     debug(" !CACHED");
   debug(" <-%I", a->from);
+
+  if (a->hostentry)
+    debug(" he=(addr=%I link=%I dep=%s uc=%u)",
+	    a->hostentry->addr, a->hostentry->link, a->hostentry->tab->name,
+	    atomic_load_explicit(&a->hostentry->uc_atomic, memory_order_acquire));
+
   if (a->dest == RTD_UNICAST)
     for (struct nexthop *nh = &(a->nh); nh; nh = nh->next)
       {
@@ -1296,6 +1334,8 @@ rta_dump(rta *a)
 void
 rta_dump_all(void)
 {
+  RTA_LOCK;
+
   rta *a;
   uint h;
 
@@ -1308,6 +1348,8 @@ rta_dump_all(void)
 	debug("\n");
       }
   debug("\n");
+
+  RTA_UNLOCK;
 }
 
 void
@@ -1329,6 +1371,8 @@ rta_show(struct cli *c, rta *a)
 void
 rta_init(void)
 {
+  rta_domain = DOMAIN_NEW(rt_attr, "Attributes");
+
   rta_pool = rp_new(&root_pool, "Attributes");
 
   rta_slab_[0] = sl_new(rta_pool, sizeof(rta));

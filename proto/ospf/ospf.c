@@ -440,6 +440,10 @@ ospf_disp(timer * timer)
 {
   struct ospf_proto *p = timer->data;
 
+  /* Do nothing if accidentally called while protocol is flushing */
+  if (p->p.proto_state == PS_STOP)
+    return;
+
   /* Check for end of graceful restart */
   if (p->gr_recovery)
     ospf_update_gr_recovery(p);
@@ -496,7 +500,7 @@ ospf_preexport(struct channel *c, rte *e)
  * them hello packet with empty neighbor list. They should start
  * their neighbor state machine with event %NEIGHBOR_1WAY.
  */
-static int
+static void
 ospf_shutdown(struct proto *P)
 {
   struct ospf_proto *p = (struct ospf_proto *) P;
@@ -523,8 +527,6 @@ ospf_shutdown(struct proto *P)
     rta_free(nf->old_rta);
   }
   FIB_WALK_END;
-
-  return PS_DOWN;
 }
 
 static void

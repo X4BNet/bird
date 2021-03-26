@@ -205,7 +205,7 @@ rpki_force_restart_proto(struct rpki_proto *p)
   /* Sign as freed */
   p->cache = NULL;
 
-  proto_notify_state(&p->p, PS_DOWN);
+  proto_notify_state(&p->p, PS_STOP);
 }
 
 /**
@@ -624,7 +624,7 @@ rpki_close_connection(struct rpki_cache *cache)
   proto_notify_state(&cache->p->p, PS_START);
 }
 
-static int
+static void
 rpki_shutdown(struct proto *P)
 {
   struct rpki_proto *p = (void *) P;
@@ -632,7 +632,6 @@ rpki_shutdown(struct proto *P)
   rpki_force_restart_proto(p);
 
   /* Protocol memory pool will be automatically freed */
-  return PS_DOWN;
 }
 
 

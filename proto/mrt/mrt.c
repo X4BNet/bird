@@ -669,6 +669,9 @@ mrt_timer(timer *t)
   struct mrt_proto *p = t->data;
   struct mrt_config *cf = (void *) (p->p.cf);
 
+  if (p->p.proto_state != PS_UP)
+    return;
+
   if (p->table_dump)
   {
     log(L_WARN "%s: Earlier RIB table dump still not finished, skipping next one", p->p.name);
@@ -715,9 +718,13 @@ mrt_event(void *P)
   p->table_dump = NULL;
 
   TRACE(D_EVENTS, "RIB table dump done");
+}
 
-  if (p->p.proto_state == PS_STOP)
-    proto_notify_state(&p->p, PS_DOWN);
+static _Bool
+mrt_cleanup(struct proto *P)
+{
+  struct mrt_proto *p = (struct mrt_proto *) P;
+  return !ev_active(p->event);
 }
 
 
@@ -901,14 +908,6 @@ mrt_start(struct proto *P)
 }
 
 static int
-mrt_shutdown(struct proto *P)
-{
-  struct mrt_proto *p = (void *) P;
-
-  return p->table_dump ? PS_STOP : PS_DOWN;
-}
-
-static int
 mrt_reconfigure(struct proto *P, struct proto_config *CF)
 {
   struct mrt_proto *p = (void *) P;
@@ -943,7 +942,7 @@ struct protocol proto_mrt = {
   .config_size =	sizeof(struct mrt_config),
   .init =		mrt_init,
   .start =		mrt_start,
-  .shutdown =		mrt_shutdown,
+  .cleanup =		mrt_cleanup,
   .reconfigure =	mrt_reconfigure,
   .copy_config =	mrt_copy_config,
 };

@@ -970,10 +970,11 @@ bgp_apply_next_hop(struct bgp_parse_state *s, rta *a, ip_addr gw, ip_addr ll)
     rtable *tab = ipa_is_ip4(gw) ? c->igp_table_ip4 : c->igp_table_ip6;
     RT_LOCK(tab);
     s->hostentry = rt_get_hostentry(RT_PRIV(tab), gw, ll, c->c.table);
+    rt_lock_hostentry(s->hostentry);
     RT_UNLOCK(tab);
 
     if (!s->mpls)
-      rta_apply_hostentry(a, s->hostentry, NULL);
+      rta_apply_hostentry(s->pool, a, s->hostentry, NULL);
 
     /* With MPLS, hostentry is applied later in bgp_apply_mpls_labels() */
   }
@@ -1007,7 +1008,7 @@ bgp_apply_mpls_labels(struct bgp_parse_state *s, rta *a, u32 *labels, uint lnum)
 
     ms.len = lnum;
     memcpy(ms.stack, labels, 4*lnum);
-    rta_apply_hostentry(a, s->hostentry, &ms);
+    rta_apply_hostentry(s->pool, a, s->hostentry, &ms);
   }
 }
 
@@ -1341,8 +1342,11 @@ bgp_rte_update(struct bgp_parse_state *s, net_addr *n, u32 path_id, rta *a0)
 {
   if (path_id != s->last_id)
   {
-    s->last_src = rt_get_source(&s->proto->p, path_id);
     s->last_id = path_id;
+
+    rt_unlock_source(s->last_src);
+    s->last_src = rt_get_source(&s->proto->p, path_id);
+    rt_lock_source(s->last_src);
   }
 
   if (!a0)
@@ -2421,6 +2425,9 @@ bgp_decode_nlri(struct bgp_parse_state *s, u32 afi, byte *nlri, uint len, ea_lis
 
   s->last_id = 0;
   s->last_src = s->proto->p.main_source;
+  rt_lock_source(s->last_src);
+
+  ASSERT_DIE(s->hostentry == NULL);
 
   /*
    * IPv4 BGP and MP-BGP may be used together in one update, therefore we do not
@@ -2448,6 +2455,14 @@ bgp_decode_nlri(struct bgp_parse_state *s, u32 afi, byte *nlri, uint len, ea_lis
   }
 
   c->desc->decode_nlri(s, nlri, len, a);
+
+  rt_unlock_source(s->last_src);
+
+  if (s->hostentry)
+  {
+    rt_unlock_hostentry(s->hostentry);
+    s->hostentry = NULL;
+  }
 
   rta_free(s->cached_rta);
   s->cached_rta = NULL;

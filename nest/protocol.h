@@ -74,8 +74,8 @@ struct protocol {
   int (*reconfigure)(struct proto *, struct proto_config *);	/* Try to reconfigure instance, returns success */
   void (*dump)(struct proto *);			/* Debugging dump */
   int (*start)(struct proto *);			/* Start the instance */
-  int (*shutdown)(struct proto *);		/* Stop the instance */
-  void (*cleanup)(struct proto *);		/* Called after shutdown when protocol became hungry/down */
+  void (*shutdown)(struct proto *);		/* Stop the instance */
+  _Bool (*cleanup)(struct proto *);		/* Called after shutdown when protocol became hungry/down; return 0 to be called again later, 1 for success */
   void (*get_status)(struct proto *, byte *buf); /* Get instance status (for `show protocols' command) */
   void (*get_route_info)(struct rte *, struct rte_storage *, byte *); /* Get route information (for `show route' command) */
   int (*get_attr)(const struct eattr *, byte *buf, int buflen);	/* ASCIIfy dynamic attribute (returns GA_*) */
@@ -173,6 +173,7 @@ struct proto {
   u32 debug;				/* Debugging flags */
   u32 mrtdump;				/* MRTDump flags */
   uint active_channels;			/* Number of active channels */
+  _Atomic uint src_count;		/* Number of allocated route sources */
   byte net_type;			/* Protocol network type (NET_*), 0 for undefined */
   byte disabled;			/* Manually disabled */
   byte vrf_set;				/* Related VRF instance (above) is defined */
@@ -440,6 +441,14 @@ struct channel_limit {
 
 void channel_notify_limit(struct channel *c, struct channel_limit *l, int dir, u32 rt_count);
 
+static inline void
+channel_reset_limit(struct channel_limit *l)
+{
+  if (l->action)
+    l->state = PLS_INITIAL;
+}
+
+
 
 /*
  *	Channels
@@ -513,8 +522,14 @@ struct channel {
   struct channel_limit in_limit;	/* Input limit */
   struct channel_limit out_limit;	/* Output limit */
 
-  struct event *feed_event;		/* Event responsible for feeding */
   struct fib_iterator feed_fit;		/* Routing table iterator used during feeding */
+  struct coroutine *export_coro;	/* Exporter and feeder coroutine */
+  struct bsem *export_sem;		/* Exporter and feeder semaphore */
+  struct rt_pending_export * _Atomic last_export;/* Last export processed */
+  struct bmap export_seen_map;		/* Keeps track which exports were already processed */
+  u64 flush_seq;			/* Table export seq when the channel announced flushing */
+
+
   struct proto_stats stats;		/* Per-channel protocol statistics */
   u32 refeed_count;			/* Number of routes exported during refeed regardless of out_limit */
 
@@ -528,8 +543,7 @@ struct channel {
   u8 stale;				/* Used in reconfiguration */
 
   u8 channel_state;
-  u8 export_state;			/* Route export state (ES_*, see below) */
-  u8 feed_active;
+  _Atomic u8 export_state;		/* Route export state (ES_*, see below) */
   u8 flush_active;
   u8 refeeding;				/* We are refeeding (valid only if export_state == ES_FEEDING) */
   u8 reloadable;			/* Hook reload_routes() is allowed on the channel */
@@ -605,8 +619,11 @@ struct channel {
 #define CS_FLUSHING	3
 
 #define ES_DOWN		0
-#define ES_FEEDING	1
-#define ES_READY	2
+#define ES_HUNGRY	1
+#define ES_FEEDING	2
+#define ES_READY	3
+#define ES_STOP		4
+#define ES_RESTART	5
 
 
 struct channel_config *proto_cf_find_channel(struct proto_config *p, uint net_type);
@@ -631,5 +648,10 @@ void channel_request_feeding(struct channel *c);
 void *channel_config_new(const struct channel_class *cc, const char *name, uint net_type, struct proto_config *proto);
 void *channel_config_get(const struct channel_class *cc, const char *name, uint net_type, struct proto_config *proto);
 int channel_reconfigure(struct channel *c, struct channel_config *cf);
+
+/* For rt-table.c */
+
+void channel_log_state_change(struct channel *c);
+void channel_export_stopped(struct channel *c);
 
 #endif

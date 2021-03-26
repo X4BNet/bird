@@ -2294,7 +2294,7 @@ babel_iface_shutdown(struct babel_iface *ifa)
   }
 }
 
-static int
+static void
 babel_shutdown(struct proto *P)
 {
   struct babel_proto *p = (void *) P;
@@ -2304,8 +2304,6 @@ babel_shutdown(struct proto *P)
 
   WALK_LIST(ifa, p->interfaces)
     babel_iface_shutdown(ifa);
-
-  return PS_DOWN;
 }
 
 static int

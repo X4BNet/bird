@@ -17,13 +17,13 @@
 #endif
 
 #ifdef HAVE_MMAP
-static u64 page_size = 0;
+static long page_size = 0;
 static _Bool use_fake = 0;
 #else
-static const u64 page_size = 4096; /* Fake page size */
+static const long page_size = 4096; /* Fake page size */
 #endif
 
-u64 get_page_size(void)
+long get_page_size(void)
 {
   if (page_size)
     return page_size;
