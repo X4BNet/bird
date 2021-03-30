@@ -53,6 +53,7 @@ extern pool root_pool;
 void *mb_alloc(pool *, unsigned size);
 void *mb_allocz(pool *, unsigned size);
 void *mb_realloc(void *m, unsigned size);
+void mb_move(void *, pool *);
 void mb_free(void *);
 
 /* Memory pools with linear allocation */
@@ -93,6 +94,10 @@ void sl_free(slab *, void *);
 
 void buffer_realloc(void **buf, unsigned *size, unsigned need, unsigned item_size);
 
+/* Allocator of whole pages; for use in slabs and other high-level allocators. */
+u64 get_page_size(void);
+void *alloc_page(void);
+void free_page(void *);
 
 #ifdef HAVE_LIBDMALLOC
 /*
