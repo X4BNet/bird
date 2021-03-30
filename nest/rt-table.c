@@ -64,7 +64,6 @@
 
 pool *rt_table_pool;
 
-static slab *rte_slab;
 static linpool *rte_update_pool;
 
 list routing_tables;
@@ -284,9 +283,9 @@ rte_find(net *net, struct rte_src *src)
 }
 
 struct rte_storage *
-rte_store(const rte *r, net *n)
+rte_store(struct rtable *tab, const rte *r, net *n)
 {
-  struct rte_storage *e = sl_alloc(rte_slab);
+  struct rte_storage *e = sl_alloc(tab->rte_slab);
   *e = (struct rte_storage) {
     .attrs = r->attrs,
     .net = n,
@@ -343,11 +342,11 @@ rte_cow_rta(const struct rte_storage *r, linpool *lp)
  * rte_free() deletes the given &rte from the routing table it's linked to.
  */
 void
-rte_free(struct rte_storage *e)
+rte_free(struct rtable *tab, struct rte_storage *e)
 {
   rt_unlock_source(e->src);
   rta_free(e->attrs);
-  sl_free(rte_slab, e);
+  sl_free(tab->rte_slab, e);
 }
 
 static int				/* Actually better or at least as good as */
@@ -542,7 +541,7 @@ do_rt_notify(struct channel *c, net *net, rte *new, struct rte_storage *old, int
   p->rt_notify(p, c, net->n.addr, new, c->out_table ? old_exported : old);
 
   if (c->out_table && old_exported)
-    rte_free(old_exported);
+    rte_free(c->out_table, old_exported);
 }
 
 static void
@@ -1002,7 +1001,7 @@ rte_recalculate(struct channel *c, net *net, rte *new, _Bool filtered)
   struct rte_storage *new_stored = NULL;
 
   if (new->attrs) {
-    new_stored = rte_store(new, net);
+    new_stored = rte_store(table, new, net);
     new_stored->sender = c;
 
     if (filtered)
@@ -1140,7 +1139,7 @@ rte_recalculate(struct channel *c, net *net, rte *new, _Bool filtered)
       if (!new_stored)
 	hmap_clear(&table->id_map, old->id);
 
-      rte_free(old);
+      rte_free(table, old);
     }
 }
 
@@ -1637,6 +1636,7 @@ rt_setup(pool *pp, struct rtable_config *cf)
   t->addr_type = cf->addr_type;
 
   fib_init(&t->fib, p, t->addr_type, sizeof(net), OFFSETOF(net, n), 0, NULL);
+  t->rte_slab = sl_new(p, sizeof(struct rte_storage));
 
   if (!(t->internal = cf->internal))
   {
@@ -1667,7 +1667,6 @@ rt_init(void)
   rta_init();
   rt_table_pool = rp_new(&root_pool, "Routing tables");
   rte_update_pool = lp_new_default(rt_table_pool);
-  rte_slab = sl_new(rt_table_pool, sizeof(struct rte_storage));
   init_list(&routing_tables);
 }
 
@@ -1914,7 +1913,7 @@ no_nexthop:
 }
 
 static inline struct rte_storage *
-rt_next_hop_update_rte(struct rte_storage *old)
+rt_next_hop_update_rte(rtable *tab, struct rte_storage *old)
 {
   rta *a = alloca(RTA_MAX_SIZE);
   memcpy(a, old->attrs, rta_size(old->attrs));
@@ -1934,7 +1933,7 @@ rt_next_hop_update_rte(struct rte_storage *old)
 
   rte_trace_in(D_ROUTES, old->sender, &e, "updated");
 
-  struct rte_storage *new = rte_store(&e, old->net);
+  struct rte_storage *new = rte_store(tab, &e, old->net);
   rte_copy_metadata(new, old);
   return new;
 }
@@ -1964,7 +1963,7 @@ rt_next_hop_update_net(rtable *tab, net *n)
   for (struct rte_storage **k = &n->routes, *e; e = *k; k = &e->next)
     if (rta_next_hop_outdated(e->attrs))
       {
-	struct rte_storage *new = rt_next_hop_update_rte(e);
+	struct rte_storage *new = rt_next_hop_update_rte(tab, e);
 
 	/* Call a pre-comparison hook */
 	/* Not really an efficient way to compute this */
@@ -2011,7 +2010,7 @@ rt_next_hop_update_net(rtable *tab, net *n)
   }
 
   for (int i=0; i<count; i++)
-    rte_free(updates[i].old);
+    rte_free(tab, updates[i].old);
 
   return count;
 }
@@ -2322,7 +2321,7 @@ rte_update_in(struct channel *c, rte *new)
 
       /* Remove the old rte */
       *pos = old->next;
-      rte_free(old);
+      rte_free(tab, old);
       tab->rt_count--;
 
       break;
@@ -2353,7 +2352,7 @@ rte_update_in(struct channel *c, rte *new)
   }
 
   /* Insert the new rte */
-  struct rte_storage *e = rte_store(new, net);
+  struct rte_storage *e = rte_store(tab, new, net);
   e->sender = c;
   e->lastmod = current_time();
   e->next = *pos;
@@ -2452,7 +2451,7 @@ again:
       if (all || (e->flags & (REF_STALE | REF_DISCARD)))
       {
 	*ee = e->next;
-	rte_free(e);
+	rte_free(t, e);
 	t->rt_count--;
       }
       else
@@ -2536,7 +2535,7 @@ rte_update_out(struct channel *c, rte *new, struct rte_storage *old, struct rte_
   }
 
   /* Insert the new rte */
-  struct rte_storage *e = rte_store(new, net);
+  struct rte_storage *e = rte_store(tab, new, net);
   e->sender = new->sender;
   e->lastmod = current_time();
   e->id = new->id;

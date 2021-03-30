@@ -317,7 +317,7 @@ static void
 krt_learn_scan(struct krt_proto *p, rte *e)
 {
   net *n = net_get(p->krt_table, e->net);
-  struct rte_storage *er = rte_store(e, n);
+  struct rte_storage *er = rte_store(p->krt_table, e, n);
   struct rte_storage *m, **mm;
 
   for(mm=&n->routes; m = *mm; mm=&m->next)
@@ -329,14 +329,14 @@ krt_learn_scan(struct krt_proto *p, rte *e)
       if (krt_uptodate(m, er))
 	{
 	  krt_trace_in_rl(&rl_alien, p, e, "[alien] seen");
-	  rte_free(er);
+	  rte_free(p->krt_table, er);
 	  m->pflags |= KRT_REF_SEEN;
 	}
       else
 	{
 	  krt_trace_in(p, e, "[alien] updated");
 	  *mm = m->next;
-	  rte_free(m);
+	  rte_free(p->krt_table, m);
 	  m = NULL;
 	}
     }
@@ -383,7 +383,7 @@ again:
 	  if (!(e->pflags & KRT_REF_SEEN))
 	    {
 	      *ee = e->next;
-	      rte_free(e);
+	      rte_free(p->krt_table, e);
 	      continue;
 	    }
 
@@ -434,7 +434,7 @@ krt_learn_async(struct krt_proto *p, rte *e, int new)
   ASSERT(!e->attrs->cached);
   e->attrs->pref = p->p.main_channel->preference;
 
-  struct rte_storage *er = rte_store(e, n);
+  struct rte_storage *er = rte_store(p->krt_table, e, n);
 
   old_best = n->routes;
 
@@ -449,12 +449,12 @@ krt_learn_async(struct krt_proto *p, rte *e, int new)
 	  if (krt_uptodate(g, er))
 	    {
 	      krt_trace_in(p, e, "[alien async] same");
-	      rte_free(er);
+	      rte_free(p->krt_table, er);
 	      return;
 	    }
 	  krt_trace_in(p, e, "[alien async] updated");
 	  *gg = g->next;
-	  rte_free(g);
+	  rte_free(p->krt_table, g);
 	}
       else
 	krt_trace_in(p, e, "[alien async] created");
@@ -465,15 +465,15 @@ krt_learn_async(struct krt_proto *p, rte *e, int new)
   else if (!g)
     {
       krt_trace_in(p, e, "[alien async] delete failed");
-      rte_free(er);
+      rte_free(p->krt_table, er);
       return;
     }
   else
     {
       krt_trace_in(p, e, "[alien async] removed");
       *gg = g->next;
-      rte_free(er);
-      rte_free(g);
+      rte_free(p->krt_table, er);
+      rte_free(p->krt_table, g);
     }
   best = n->routes;
   bestp = &n->routes;

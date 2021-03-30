@@ -158,6 +158,7 @@ typedef struct rtable {
   node n;				/* Node in list of all tables */
   pool *rp;				/* Resource pool to allocate everything from, including itself */
   struct fib fib;
+  slab *rte_slab;			/* Slab for allocating routes */
   char *name;				/* Name of this table */
   list channels;			/* List of attached channels (struct channel) */
   uint addr_type;			/* Type of address data stored in table (NET_*) */
@@ -355,8 +356,8 @@ void rt_refresh_end(rtable *t, struct channel *c);
 void rt_modify_stale(rtable *t, struct channel *c);
 void rt_schedule_prune(rtable *t);
 void rte_dump(struct rte_storage *);
-void rte_free(struct rte_storage *);
-struct rte_storage *rte_store(const rte *, net *n);
+void rte_free(rtable *, struct rte_storage *);
+struct rte_storage *rte_store(rtable *, const rte *, net *n);
 void rte_copy_metadata(struct rte_storage *dest, struct rte_storage *src);
 static inline rte rte_copy(const struct rte_storage *r)
 { return (rte) { .attrs = r->attrs, .net = r->net->n.addr, .src = r->src, .id = r->id, .sender = r->sender, .generation = r->generation, }; }
