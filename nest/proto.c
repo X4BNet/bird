@@ -619,6 +619,9 @@ channel_do_down(struct channel *c)
 
   CALL(c->channel->cleanup, c);
 
+  if ((c->proto->proto_state == PS_STOP) && (c->proto->active_channels == 0))
+    proto_notify_state(c->proto, PS_DOWN);
+
   /* Schedule protocol shutddown */
   if (proto_is_done(c->proto))
     ev_schedule(c->proto->event);
@@ -981,6 +984,11 @@ proto_event(void *ptr)
 
     p->active = 0;
     proto_log_state_change(p);
+
+    if (p->disabled && (p->down_sched == PDS_RESTART))
+      p->disabled = 0;
+
+    p->down_sched = 0;
     proto_rethink_goal(p);
   }
 }
@@ -1367,6 +1375,7 @@ protos_commit(struct config *new, struct config *old, int force_reconfig, int ty
     proto_rethink_goal(p);
 }
 
+
 static void
 proto_rethink_goal(struct proto *p)
 {
@@ -1415,7 +1424,16 @@ proto_rethink_goal(struct proto *p)
       /* Going down */
       DBG("Kicking %s down\n", p->name);
       PD(p, "Shutting down");
-      proto_notify_state(p, (q->shutdown ? q->shutdown(p) : PS_DOWN));
+
+      /* First call the shutdown hook */
+      byte down_state = p->proto->shutdown ? p->proto->shutdown(p) : PS_DOWN;
+
+      /* Then we need to transition to PS_STOP anyway to stop channels */
+      proto_notify_state(p, PS_STOP);
+
+      /* If there is no channel remaining and the protocol also agrees, we may proceed */
+      if ((down_state == PS_DOWN) && (p->active_channels == 0))
+	proto_notify_state(p, PS_DOWN);
     }
   }
 }
@@ -1722,17 +1740,10 @@ proto_shutdown_loop(timer *t UNUSED)
   struct proto *p, *p_next;
 
   WALK_LIST_DELSAFE(p, p_next, proto_list)
-    if (p->down_sched)
+    if (p->down_sched && !p->disabled)
     {
-      proto_restart = (p->down_sched == PDS_RESTART);
-
       p->disabled = 1;
       proto_rethink_goal(p);
-      if (proto_restart)
-      {
-	p->disabled = 0;
-	proto_rethink_goal(p);
-      }
     }
 }
 
@@ -1898,7 +1909,6 @@ proto_do_pause(struct proto *p)
 static void
 proto_do_stop(struct proto *p)
 {
-  p->down_sched = 0;
   p->gr_recovery = 0;
 
   p->do_stop = 1;
