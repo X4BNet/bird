@@ -499,8 +499,11 @@ do_rt_notify(struct channel *c, net *net, rte *new, struct rte_storage *old, int
   struct rte_storage *old_exported = NULL;
   if (c->out_table)
   {
-    if (!rte_update_out(c, new, old, &old_exported, refeed))
+    if (!rte_update_out(c, new, old, &old_exported))
+    {
+      rte_trace_out(D_ROUTES, c, new, "idempotent");
       return;
+    }
   }
 
   if (new)
@@ -2476,7 +2479,7 @@ again:
  */
 
 int
-rte_update_out(struct channel *c, rte *new, struct rte_storage *old, struct rte_storage **old_stored, int refeed)
+rte_update_out(struct channel *c, rte *new, struct rte_storage *old, struct rte_storage **old_stored)
 {
   struct rtable *tab = c->out_table;
   struct rte_storage **pos;
@@ -2494,7 +2497,7 @@ rte_update_out(struct channel *c, rte *new, struct rte_storage *old, struct rte_
     net = net_find(tab, old->net->n.addr);
 
     if (!net)
-      goto drop_withdraw;
+      goto drop;
   }
 
   /* Find the old rte */
@@ -2512,7 +2515,7 @@ rte_update_out(struct channel *c, rte *new, struct rte_storage *old, struct rte_
 	}
 	*/
 
-	goto drop_update;
+	goto drop;
       }
 
       /* Keep the old rte */
@@ -2528,7 +2531,7 @@ rte_update_out(struct channel *c, rte *new, struct rte_storage *old, struct rte_
   if (!new)
   {
     if (!*old_stored)
-      goto drop_withdraw;
+      goto drop;
 
     if (!net->routes)
       fib_delete(&tab->fib, net);
@@ -2545,11 +2548,34 @@ rte_update_out(struct channel *c, rte *new, struct rte_storage *old, struct rte_
   tab->rt_count++;
   return 1;
 
-drop_update:
-  return refeed;
-
-drop_withdraw:
+drop:
   return 0;
+}
+
+void
+rt_refeed_channel(struct channel *c)
+{
+  if (!c->out_table)
+  {
+    channel_request_feeding(c);
+    return;
+  }
+
+  ASSERT_DIE(c->ra_mode != RA_ANY);
+
+  c->proto->feed_begin(c, 0);
+
+  FIB_WALK(&c->out_table->fib, net, n)
+  {
+    if (!n->routes)
+      continue;
+
+    rte e = rte_copy(n->routes);
+    c->proto->rt_notify(c->proto, c, n->n.addr, &e, NULL);
+  }
+  FIB_WALK_END;
+
+  c->proto->feed_end(c);
 }
 
 
