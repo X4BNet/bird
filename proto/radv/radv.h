@@ -147,6 +147,7 @@ struct radv_proto
   list iface_list;		/* List of active ifaces */
   u8 valid;			/* Router is valid for forwarding, used for shutdown */
   u8 active;			/* Whether radv is active w.r.t. triggers */
+  u8 reconf_trigger;		/* Trigger reconfiguration in progress */
   u8 fib_up;			/* FIB table (routes) is initialized */
   struct fib routes;		/* FIB table of specific routes (struct radv_route) */
   btime prune_time;		/* Next time of route table pruning */

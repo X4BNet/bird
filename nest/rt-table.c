@@ -1299,32 +1299,6 @@ rte_modify(struct rte_storage *old)
   rte_update_unlock();
 }
 
-/* Check rtable for best route to given net whether it would be exported do p */
-int
-rt_examine(rtable *t, net_addr *a, struct channel *c, const struct filter *filter)
-{
-  struct proto *p = c->proto;
-  net *n = net_find(t, a);
-  struct rte_storage *rt = n ? n->routes : NULL;
-
-  if (!rte_is_valid(rt))
-    return 0;
-
-  rte rt0 = rte_copy(rt);
-
-  rte_update_lock();
-
-  /* Rest is stripped down export_filter() */
-  int v = p->preexport ? p->preexport(c, &rt0) : 0;
-  if (v == RIC_PROCESS)
-    v = (f_run(filter, &rt0, rte_update_pool, FF_SILENT) <= F_ACCEPT);
-
-  rte_update_unlock();
-
-  return v > 0;
-}
-
-
 /**
  * rt_refresh_begin - start a refresh cycle
  * @t: related routing table
@@ -2567,15 +2541,43 @@ rt_refeed_channel(struct channel *c)
 
   FIB_WALK(&c->out_table->fib, net, n)
   {
-    if (!n->routes)
-      continue;
-
-    rte e = rte_copy(n->routes);
-    c->proto->rt_notify(c->proto, c, n->n.addr, &e, NULL);
+    for (struct rte_storage *r = n->routes; r; r = r->next)
+    {
+      rte e = rte_copy(r);
+      c->proto->rt_notify(c->proto, c, n->n.addr, &e, NULL);
+    }
   }
   FIB_WALK_END;
 
   c->proto->feed_end(c);
+}
+
+void
+rt_refeed_channel_net(struct channel *c, const net_addr *n)
+{
+  if (c->out_table)
+  {
+    net *nn = net_find(c->out_table, n);
+    if (nn)
+      for (struct rte_storage *r = nn->routes; r; r = r->next)
+      {
+	rte e = rte_copy(r);
+	c->proto->rt_notify(c->proto, c, n, &e, NULL);
+      }
+  }
+  else
+  {
+    net *nn = net_find(c->table, n);
+    if (nn)
+      if (c->ra_mode == RA_ANY)
+      {
+	for (struct rte_storage *r = nn->routes; r; r = r->next)
+	  if (rte_is_valid(r))
+	    do_feed_channel(c, nn, r);
+      }
+      else if (nn->routes && rte_is_valid(nn->routes))
+	do_feed_channel(c, nn, nn->routes);
+  }
 }
 
 

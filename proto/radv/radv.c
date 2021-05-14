@@ -416,6 +416,7 @@ radv_rt_notify(struct proto *P, struct channel *ch UNUSED, const net_addr *n, rt
   {
     u8 old_active = p->active;
     p->active = !!new;
+    p->reconf_trigger = 0;
 
     if (p->active == old_active)
       return;
@@ -545,18 +546,6 @@ again:
   p->prune_time = next;
 }
 
-static int
-radv_check_active(struct radv_proto *p)
-{
-  struct radv_config *cf = (struct radv_config *) (p->p.cf);
-
-  if (!radv_trigger_valid(cf))
-    return 1;
-
-  struct channel *c = p->p.main_channel;
-  return rt_examine(c->table, &cf->trigger, c, c->out_filter);
-}
-
 static void
 radv_postconfig(struct proto_config *CF)
 {
@@ -649,8 +638,30 @@ radv_reconfigure(struct proto *P, struct proto_config *CF)
   if (!proto_configure_channel(P, &P->main_channel, proto_cf_main_channel(CF)))
     return 0;
 
-  P->cf = CF; /* radv_check_active() requires proper P->cf */
-  p->active = radv_check_active(p);
+  /* Store the current state */
+  u8 old_active = p->active;
+
+  /* Indicate a reconfiguration */
+  p->reconf_trigger = 1;
+
+  /* Set the new trigger */
+  P->cf = CF;
+
+  /* Check the new trigger */
+  if (radv_trigger_valid(new))
+  {
+    /* Refeed the appropriate route */
+    rt_refeed_channel_net(p->p.main_channel, &new->trigger);
+
+    /* We were active before but no trigger route has been refeeded */
+    if (old_active && p->reconf_trigger)
+      p->active = 0;
+
+    p->reconf_trigger = 0;
+  }
+  /* Activate without trigger */
+  else if (!old_active)
+    p->active = 1;
 
   /* Allocate or free FIB */
   radv_set_fib(p, new->propagate_routes);
@@ -658,6 +669,10 @@ radv_reconfigure(struct proto *P, struct proto_config *CF)
   /* We started to accept routes so we need to refeed them */
   if (!old->propagate_routes && new->propagate_routes)
     channel_request_feeding(p->p.main_channel);
+
+  /* Or refeed at least the old trigger route */
+  else if (new->propagate_routes && radv_trigger_valid(old))
+    rt_refeed_channel_net(p->p.main_channel, &old->trigger);
 
   struct iface *iface;
   WALK_LIST(iface, iface_list)
