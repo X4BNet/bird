@@ -633,6 +633,9 @@ babel_announce_rte(struct babel_proto *p, struct babel_entry *e)
   struct babel_route *r = e->selected;
   struct channel *c = (e->n.addr->type == NET_IP4) ? p->ip4_channel : p->ip6_channel;
 
+  if (c->channel_state != CS_UP)
+    return;
+
   if (r)
   {
     rta a0 = {
@@ -717,6 +720,10 @@ static inline void
 babel_announce_retraction(struct babel_proto *p, struct babel_entry *e)
 {
   struct channel *c = (e->n.addr->type == NET_IP4) ? p->ip4_channel : p->ip6_channel;
+
+  if (c->channel_state != CS_UP)
+    return;
+
   e->unreachable = 0;
   rte_withdraw(c, e->n.addr, p->p.main_source);
 }
