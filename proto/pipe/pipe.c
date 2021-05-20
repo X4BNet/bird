@@ -118,12 +118,18 @@ pipe_rte_track(struct channel *C, const net_addr *n, struct rte_src *src)
   struct pipe_proto *p = (void *) C->proto;
   struct channel *src_ch = (C == p->pri) ? p->sec : p->pri;
 
-  net *nn = net_find(src_ch->table, n);
+  /*
+   * TODO: make this asynchronous
+  RT_LOCK(src_ch->table);
+  net *nn = net_find(RT_PRIV(src_ch->table), n);
   struct rte_storage *e = nn ? rte_find(nn, src) : NULL;
+  RT_UNLOCK(src_ch->table);
+  */
 
   log_rl(&rl_pipe, L_TRACE "[route trace] Piped by protocol %s from table %s to table %s: %N %s/%u:%u",
       p->p.name, src_ch->table->name, C->table->name, n, src->proto->name, src->private_id, src->global_id);
 
+  /*
   if (!e)
   {
     log_rl(&rl_pipe, L_ERR "[route trace] Couldn't find parent route in table %s: %N %s/%u:%u", src_ch->table->name,
@@ -136,6 +142,7 @@ pipe_rte_track(struct channel *C, const net_addr *n, struct rte_src *src)
 	n, src->proto->name, src->private_id, src->global_id);
   else
     return e->sender->proto->rte_track(e->sender, n, src);
+    */
 }
 
 static void

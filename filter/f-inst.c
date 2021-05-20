@@ -1210,7 +1210,7 @@
   INST(FI_ROA_CHECK_IMPLICIT, 0, 1) {	/* ROA Check */
     NEVER_CONSTANT;
     RTC(1);
-    struct rtable *table = rtc->table;
+    rtable *table = rtc->table;
     ACCESS_RTE;
     ACCESS_EATTRS;
     const net_addr *net = fs->rte->net;
@@ -1234,7 +1234,11 @@
     if (table->addr_type != (net->type == NET_IP4 ? NET_ROA4 : NET_ROA6))
       RESULT(T_ENUM_ROA, i, ROA_UNKNOWN); /* Prefix and table type mismatch */
     else
-      RESULT(T_ENUM_ROA, i, [[ net_roa_check(table, net, as) ]]);
+    {
+      RT_LOCK(table);
+      RESULT(T_ENUM_ROA, i, [[ net_roa_check(RT_PRIV(table), net, as) ]]);
+      RT_UNLOCK(table);
+    }
   }
 
   INST(FI_ROA_CHECK_EXPLICIT, 2, 1) {	/* ROA Check */
@@ -1242,7 +1246,7 @@
     ARG(1, T_NET);
     ARG(2, T_INT);
     RTC(3);
-    struct rtable *table = rtc->table;
+    rtable *table = rtc->table;
 
     u32 as = v2.val.i;
 
@@ -1255,7 +1259,11 @@
     if (table->addr_type != (v1.val.net->type == NET_IP4 ? NET_ROA4 : NET_ROA6))
       RESULT(T_ENUM_ROA, i, ROA_UNKNOWN); /* Prefix and table type mismatch */
     else
-      RESULT(T_ENUM_ROA, i, [[ net_roa_check(table, v1.val.net, as) ]]);
+    {
+      RT_LOCK(table);
+      RESULT(T_ENUM_ROA, i, [[ net_roa_check(RT_PRIV(table), v1.val.net, as) ]]);
+      RT_UNLOCK(table);
+    }
 
   }
 

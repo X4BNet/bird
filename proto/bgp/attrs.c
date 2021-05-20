@@ -2135,7 +2135,7 @@ use_deterministic_med(struct rte_storage *r)
 }
 
 int
-bgp_rte_recalculate(rtable *table, net *net, struct rte_storage *new, struct rte_storage *old, struct rte_storage *old_best)
+bgp_rte_recalculate(rtable_private *table, net *net, struct rte_storage *new, struct rte_storage *old, struct rte_storage *old_best)
 {
   struct rte_storage *r, *s;
   struct rte_storage *key = new ? new : old;

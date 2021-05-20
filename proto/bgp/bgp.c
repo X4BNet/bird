@@ -1745,10 +1745,18 @@ bgp_channel_start(struct channel *C)
   ip_addr src = p->local_ip;
 
   if (c->igp_table_ip4)
-    rt_lock_table(c->igp_table_ip4);
+  {
+    RT_LOCK(c->igp_table_ip4);
+    rt_lock_table(RT_PRIV(c->igp_table_ip4));
+    RT_UNLOCK(c->igp_table_ip4);
+  }
 
   if (c->igp_table_ip6)
-    rt_lock_table(c->igp_table_ip6);
+  {
+    RT_LOCK(c->igp_table_ip6);
+    rt_lock_table(RT_PRIV(c->igp_table_ip6));
+    RT_UNLOCK(c->igp_table_ip6);
+  }
 
   c->pool = p->p.pool; // XXXX
   bgp_init_bucket_table(c);
@@ -1829,10 +1837,18 @@ bgp_channel_cleanup(struct channel *C)
   struct bgp_channel *c = (void *) C;
 
   if (c->igp_table_ip4)
-    rt_unlock_table(c->igp_table_ip4);
+  {
+    RT_LOCK(c->igp_table_ip4);
+    rt_unlock_table(RT_PRIV(c->igp_table_ip4));
+    RT_UNLOCK(c->igp_table_ip4);
+  }
 
   if (c->igp_table_ip6)
-    rt_unlock_table(c->igp_table_ip6);
+  {
+    RT_LOCK(c->igp_table_ip6);
+    rt_unlock_table(RT_PRIV(c->igp_table_ip6));
+    RT_UNLOCK(c->igp_table_ip6);
+  }
 
   c->index = 0;
 

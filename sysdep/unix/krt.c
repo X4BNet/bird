@@ -316,8 +316,11 @@ krt_learn_announce_delete(struct krt_proto *p, net_addr *n)
 static void
 krt_learn_scan(struct krt_proto *p, rte *e)
 {
-  net *n = net_get(p->krt_table, e->net);
-  struct rte_storage *er = rte_store(p->krt_table, e, n);
+  RT_LOCK(p->krt_table);
+  rtable_private *tab = RT_PRIV(p->krt_table);
+
+  net *n = net_get(tab, e->net);
+  struct rte_storage *er = rte_store(tab, e, n);
   struct rte_storage *m, **mm;
 
   for(mm=&n->routes; m = *mm; mm=&m->next)
@@ -329,14 +332,14 @@ krt_learn_scan(struct krt_proto *p, rte *e)
       if (krt_uptodate(m, er))
 	{
 	  krt_trace_in_rl(&rl_alien, p, e, "[alien] seen");
-	  rte_free(p->krt_table, er);
+	  rte_free(tab, er);
 	  m->pflags |= KRT_REF_SEEN;
 	}
       else
 	{
 	  krt_trace_in(p, e, "[alien] updated");
 	  *mm = m->next;
-	  rte_free(p->krt_table, m);
+	  rte_free(tab, m);
 	  m = NULL;
 	}
     }
@@ -349,12 +352,16 @@ krt_learn_scan(struct krt_proto *p, rte *e)
       n->routes = er;
       er->pflags |= KRT_REF_SEEN;
     }
+  RT_UNLOCK(p->krt_table);
 }
 
 static void
 krt_learn_prune(struct krt_proto *p)
 {
-  struct fib *fib = &p->krt_table->fib;
+  RT_LOCK(p->krt_table);
+  rtable_private *tab = RT_PRIV(p->krt_table);
+
+  struct fib *fib = &tab->fib;
   struct fib_iterator fit;
 
   KRT_TRACE(p, D_EVENTS, "Pruning inherited routes");
@@ -383,7 +390,7 @@ again:
 	  if (!(e->pflags & KRT_REF_SEEN))
 	    {
 	      *ee = e->next;
-	      rte_free(p->krt_table, e);
+	      rte_free(tab, e);
 	      continue;
 	    }
 
@@ -423,18 +430,22 @@ again:
   FIB_ITERATE_END;
 
   p->reload = 0;
+  RT_UNLOCK(p->krt_table);
 }
 
 static void
 krt_learn_async(struct krt_proto *p, rte *e, int new)
 {
-  net *n = net_get(p->krt_table, e->net);
+  RT_LOCK(p->krt_table);
+  rtable_private *tab = RT_PRIV(p->krt_table);
+
+  net *n = net_get(tab, e->net);
   struct rte_storage *g, **gg, *best, **bestp, *old_best;
 
   ASSERT(!e->attrs->cached);
   e->attrs->pref = p->p.main_channel->preference;
 
-  struct rte_storage *er = rte_store(p->krt_table, e, n);
+  struct rte_storage *er = rte_store(tab, e, n);
 
   old_best = n->routes;
 
@@ -449,12 +460,13 @@ krt_learn_async(struct krt_proto *p, rte *e, int new)
 	  if (krt_uptodate(g, er))
 	    {
 	      krt_trace_in(p, e, "[alien async] same");
-	      rte_free(p->krt_table, er);
+	      rte_free(tab, er);
+	      RT_UNLOCK(p->krt_table);
 	      return;
 	    }
 	  krt_trace_in(p, e, "[alien async] updated");
 	  *gg = g->next;
-	  rte_free(p->krt_table, g);
+	  rte_free(tab, g);
 	}
       else
 	krt_trace_in(p, e, "[alien async] created");
@@ -465,15 +477,16 @@ krt_learn_async(struct krt_proto *p, rte *e, int new)
   else if (!g)
     {
       krt_trace_in(p, e, "[alien async] delete failed");
-      rte_free(p->krt_table, er);
+      rte_free(tab, er);
+      RT_UNLOCK(p->krt_table);
       return;
     }
   else
     {
       krt_trace_in(p, e, "[alien async] removed");
       *gg = g->next;
-      rte_free(p->krt_table, er);
-      rte_free(p->krt_table, g);
+      rte_free(tab, er);
+      rte_free(tab, g);
     }
   best = n->routes;
   bestp = &n->routes;
@@ -495,6 +508,8 @@ krt_learn_async(struct krt_proto *p, rte *e, int new)
       best->next = n->routes;
       n->routes = best;
     }
+
+  RT_UNLOCK(p->krt_table);
 
   if (best != old_best)
     {

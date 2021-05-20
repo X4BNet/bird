@@ -13,6 +13,9 @@
 #include "lib/bitmap.h"
 #include "lib/resource.h"
 #include "lib/net.h"
+#include "lib/locking.h"
+
+#include <stdatomic.h>
 
 struct ea_list;
 struct protocol;
@@ -136,36 +139,37 @@ void fit_copy(struct fib *f, struct fib_iterator *dst, struct fib_iterator *src)
  *	Each of the RTE's contains variable data (the preference and protocol-dependent
  *	metrics) and a pointer to a route attribute block common for many routes).
  *
- *	It's guaranteed that there is at most one RTE for every (prefix,proto) pair.
+ *	It's guaranteed that there is at most one RTE for every (prefix,src) pair.
  */
 
-struct rtable_config {
-  node n;
-  char *name;
-  struct rtable *table;
-  struct proto_config *krt_attached;	/* Kernel syncer attached to this table */
-  uint addr_type;			/* Type of address data stored in table (NET_*) */
-  int gc_max_ops;			/* Maximum number of operations before GC is run */
-  int gc_min_time;			/* Minimum time between two consecutive GC runs */
-  byte sorted;				/* Routes of network are sorted according to rte_better() */
-  byte internal;			/* Internal table of a protocol */
-  btime min_settle_time;		/* Minimum settle time for notifications */
-  btime max_settle_time;		/* Maximum settle time for notifications */
-};
+DEFINE_DOMAIN(rtable);
+DEFINE_DOMAIN(rtable_internal);
 
-typedef struct rtable {
-  resource r;
-  node n;				/* Node in list of all tables */
+typedef struct rtable_private {
+  /* This part is public */
+#define RTABLE_PUBLIC \
+  resource r; \
+  node n;				/* Node in list of all tables */ \
+  uint addr_type;			/* Type of address data stored in table (NET_*) */ \
+  char *name;				/* Name of this table */ \
+  struct bsem *maint_sem;		/* Maintenance semaphore */ \
+  _Atomic byte nhu_state;		/* Next Hop Update state */ \
+  u8 internal;				/* 0 for main table, 1 for a protocol's private table */ \
+  union {				/* The table is a separate locking domain */ \
+    DOMAIN(rtable) dom;			/* Domain for main table */ \
+    DOMAIN(rtable_internal) idom;	/* Domain for internal table */ \
+  };
+
+  /* Put the public part here */
+  RTABLE_PUBLIC
+
+  /* The rest is private */
   pool *rp;				/* Resource pool to allocate everything from, including itself */
   struct fib fib;
   slab *rte_slab;			/* Slab for allocating routes */
-  char *name;				/* Name of this table */
   list channels;			/* List of attached channels (struct channel) */
-  uint addr_type;			/* Type of address data stored in table (NET_*) */
   int use_count;			/* Number of protocols using this table */
   u32 rt_count;				/* Number of routes in the table */
-
-  byte internal;			/* Internal table of a protocol */
 
   struct hmap id_map;
   struct hostcache *hostcache;
@@ -180,17 +184,49 @@ typedef struct rtable {
   int gc_counter;			/* Number of operations since last GC */
 
   struct coroutine *maint_coro;		/* Maintenance coroutine */
-  struct bsem *maint_sem;		/* Maintenance semaphore */
   byte prune_state;			/* Table prune state, 1 -> scheduled, 2-> running */
   byte hcu_scheduled;			/* Hostcache update is scheduled */
-  byte nhu_state;			/* Next Hop Update state */
 
   struct fib_iterator prune_fit;	/* Rtable prune FIB iterator */
   struct fib_iterator nhu_fit;		/* Next Hop Update FIB iterator */
 
   list subscribers;			/* Subscribers for notifications */
   struct timer *settle_timer;		/* Settle time for notifications */
+} rtable_private;
+
+typedef union {
+  struct { RTABLE_PUBLIC };
+  rtable_private priv;
 } rtable;
+
+#define RT_PRIV(tab)	(&((tab)->priv))
+
+/* 
+#define RT_INT(tab) ((tab)->internal)
+#define RT_LOCK(tab) (RT_INT(tab) ? LOCK_DOMAIN(rtable_internal, (tab)->idom) : LOCK_DOMAIN(rtable, (tab)->dom))
+#define RT_UNLOCK(tab) (RT_INT(tab) ? UNLOCK_DOMAIN(rtable_internal, (tab)->idom) : UNLOCK_DOMAIN(rtable, (tab)->dom))
+*/
+
+#define RT_LOCK(tab)
+#define RT_UNLOCK(tab)
+
+#define RT_LOCK_I(tab)		the_bird_lock()
+#define RT_UNLOCK_I(tab)	the_bird_unlock()
+
+
+struct rtable_config {
+  node n;
+  char *name;
+  rtable *table;
+  struct proto_config *krt_attached;	/* Kernel syncer attached to this table */
+  uint addr_type;			/* Type of address data stored in table (NET_*) */
+  int gc_max_ops;			/* Maximum number of operations before GC is run */
+  int gc_min_time;			/* Minimum time between two consecutive GC runs */
+  byte sorted;				/* Routes of network are sorted according to rte_better() */
+  byte internal;			/* Internal table of a protocol */
+  btime min_settle_time;		/* Minimum settle time for notifications */
+  btime max_settle_time;		/* Maximum settle time for notifications */
+};
 
 struct rt_subscription {
   node n;
@@ -226,7 +262,7 @@ struct hostentry {
   ip_addr addr;				/* IP address of host, part of key */
   ip_addr link;				/* (link-local) IP address of host, used as gw
 					   if host is directly attached */
-  struct rtable *tab;			/* Dependent table, part of key */
+  rtable *tab;				/* Dependent table, part of key */
   struct hostentry *next;		/* Next in hash chain */
   unsigned hash_key;			/* Hash key */
   unsigned uc;				/* Use count */
@@ -336,28 +372,27 @@ struct config;
 void rt_init(void);
 void rt_preconfig(struct config *);
 void rt_commit(struct config *new, struct config *old);
-void rt_lock_table(rtable *);
-void rt_unlock_table(rtable *);
+void rt_lock_table(rtable_private *);
+void rt_unlock_table(rtable_private *);
 void rt_subscribe(rtable *tab, struct rt_subscription *s);
 void rt_unsubscribe(struct rt_subscription *s);
 rtable *rt_setup(pool *, struct rtable_config *);
-static inline void rt_shutdown(rtable *r) { rfree(r->rp); }
 
-static inline net *net_find(rtable *tab, const net_addr *addr) { return (net *) fib_find(&tab->fib, addr); }
-static inline net *net_find_valid(rtable *tab, const net_addr *addr)
+static inline net *net_find(rtable_private *tab, const net_addr *addr) { return (net *) fib_find(&tab->fib, addr); }
+static inline net *net_find_valid(rtable_private *tab, const net_addr *addr)
 { net *n = net_find(tab, addr); return (n && rte_is_valid(n->routes)) ? n : NULL; }
-static inline net *net_get(rtable *tab, const net_addr *addr) { return (net *) fib_get(&tab->fib, addr); }
-void *net_route(rtable *tab, const net_addr *n);
-int net_roa_check(rtable *tab, const net_addr *n, u32 asn);
+static inline net *net_get(rtable_private *tab, const net_addr *addr) { return (net *) fib_get(&tab->fib, addr); }
+void *net_route(rtable_private *tab, const net_addr *n);
+int net_roa_check(rtable_private *tab, const net_addr *n, u32 asn);
 struct rte_storage *rte_find(net *net, struct rte_src *src);
 rte *rt_export_merged(struct channel *c, net *net, rte *best, linpool *pool, int silent);
 void rt_refresh_begin(rtable *t, struct channel *c);
 void rt_refresh_end(rtable *t, struct channel *c);
 void rt_modify_stale(rtable *t, struct channel *c);
-void rt_schedule_prune(rtable *t);
+void rt_schedule_prune(rtable_private *t);
 void rte_dump(struct rte_storage *);
-void rte_free(rtable *, struct rte_storage *);
-struct rte_storage *rte_store(rtable *, const rte *, net *n);
+void rte_free(rtable_private *, struct rte_storage *);
+struct rte_storage *rte_store(rtable_private *, const rte *, net *n);
 void rte_copy_metadata(struct rte_storage *dest, struct rte_storage *src);
 static inline rte rte_copy(const struct rte_storage *r)
 { return (rte) { .attrs = r->attrs, .net = r->net->n.addr, .src = r->src, .id = r->id, .sender = r->sender, .generation = r->generation, }; }
@@ -387,6 +422,7 @@ struct rt_show_data {
   net_addr *addr;
   list tables;
   struct rt_show_data_rtable *tab;	/* Iterator over table list */
+  rtable_private *tab_priv;		/* Private (if locked) */
   struct rt_show_data_rtable *last_table; /* Last table in output */
   struct fib_iterator fit;		/* Iterator over networks in table */
   int verbose, tables_defined_by;
@@ -695,11 +731,11 @@ void rta_dump_all(void);
 void rta_show(struct cli *, rta *);
 
 u32 rt_get_igp_metric(struct rta *);
-struct hostentry * rt_get_hostentry(rtable *tab, ip_addr a, ip_addr ll, rtable *dep);
+struct hostentry * rt_get_hostentry(rtable_private *tab, ip_addr a, ip_addr ll, rtable *dep);
 void rta_apply_hostentry(rta *a, struct hostentry *he, mpls_label_stack *mls);
 
 static inline void
-rta_set_recursive_next_hop(rtable *dep, rta *a, rtable *tab, ip_addr gw, ip_addr ll, mpls_label_stack *mls)
+rta_set_recursive_next_hop(rtable *dep, rta *a, rtable_private *tab, ip_addr gw, ip_addr ll, mpls_label_stack *mls)
 {
   rta_apply_hostentry(a, rt_get_hostentry(tab, gw, ll, dep), mls);
 }

@@ -14,6 +14,8 @@ struct domain_generic;
 /* Here define the global lock order; first to last. */
 struct lock_order {
   struct domain_generic *the_bird;
+  struct domain_generic *rtable_internal;
+  struct domain_generic *rtable;
 };
 
 extern _Thread_local struct lock_order locking_stack;
@@ -24,6 +26,9 @@ extern _Thread_local struct domain_generic **last_locked;
 
 #define DOMAIN_NEW(type, name)  (DOMAIN(type)) { .type = domain_new(name, OFFSETOF(struct lock_order, type)) }
 struct domain_generic *domain_new(const char *name, uint order);
+
+#define DOMAIN_FREE(type, d)	domain_free((d).type)
+void domain_free(struct domain_generic *);
 
 #define DOMAIN_NULL(type)   (DOMAIN(type)) {}
 

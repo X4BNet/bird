@@ -68,18 +68,18 @@ static linpool *rte_update_pool;
 
 list routing_tables;
 
-static void rt_free_hostcache(rtable *tab);
-static void rt_notify_hostcache(rtable *tab, net *net);
-static void rt_update_hostcache(rtable *tab);
-static void rt_next_hop_update(rtable *tab);
-static inline void rt_prune_table(rtable *tab);
-static inline void rt_schedule_notify(rtable *tab);
+static void rt_free_hostcache(rtable_private *tab);
+static void rt_notify_hostcache(rtable_private *tab, net *net);
+static void rt_update_hostcache(rtable_private *tab);
+static void rt_next_hop_update(rtable_private *tab);
+static inline void rt_prune_table(rtable_private *tab);
+static inline void rt_schedule_notify(rtable_private *tab);
 
 struct tbf rl_pipe = TBF_DEFAULT_LOG_LIMITS;
 
 /* Like fib_route(), but skips empty net entries */
 static inline void *
-net_route_ip4(rtable *t, net_addr_ip4 *n)
+net_route_ip4(rtable_private *t, net_addr_ip4 *n)
 {
   net *r;
 
@@ -93,7 +93,7 @@ net_route_ip4(rtable *t, net_addr_ip4 *n)
 }
 
 static inline void *
-net_route_ip6(rtable *t, net_addr_ip6 *n)
+net_route_ip6(rtable_private *t, net_addr_ip6 *n)
 {
   net *r;
 
@@ -107,7 +107,7 @@ net_route_ip6(rtable *t, net_addr_ip6 *n)
 }
 
 static inline void *
-net_route_ip6_sadr(rtable *t, net_addr_ip6_sadr *n)
+net_route_ip6_sadr(rtable_private *t, net_addr_ip6_sadr *n)
 {
   struct fib_node *fn;
 
@@ -146,7 +146,7 @@ net_route_ip6_sadr(rtable *t, net_addr_ip6_sadr *n)
 }
 
 void *
-net_route(rtable *tab, const net_addr *n)
+net_route(rtable_private *tab, const net_addr *n)
 {
   ASSERT(tab->addr_type == n->type);
 
@@ -175,7 +175,7 @@ net_route(rtable *tab, const net_addr *n)
 
 
 static int
-net_roa_check_ip4(rtable *tab, const net_addr_ip4 *px, u32 asn)
+net_roa_check_ip4(rtable_private *tab, const net_addr_ip4 *px, u32 asn)
 {
   struct net_addr_roa4 n = NET_ADDR_ROA4(px->prefix, px->pxlen, 0, 0);
   struct fib_node *fn;
@@ -207,7 +207,7 @@ net_roa_check_ip4(rtable *tab, const net_addr_ip4 *px, u32 asn)
 }
 
 static int
-net_roa_check_ip6(rtable *tab, const net_addr_ip6 *px, u32 asn)
+net_roa_check_ip6(rtable_private *tab, const net_addr_ip6 *px, u32 asn)
 {
   struct net_addr_roa6 n = NET_ADDR_ROA6(px->prefix, px->pxlen, 0, 0);
   struct fib_node *fn;
@@ -254,7 +254,7 @@ net_roa_check_ip6(rtable *tab, const net_addr_ip6 *px, u32 asn)
  * must have type NET_IP4 or NET_IP6, respectively.
  */
 int
-net_roa_check(rtable *tab, const net_addr *n, u32 asn)
+net_roa_check(rtable_private *tab, const net_addr *n, u32 asn)
 {
   if ((tab->addr_type == NET_ROA4) && (n->type == NET_IP4))
     return net_roa_check_ip4(tab, (const net_addr_ip4 *) n, asn);
@@ -283,7 +283,7 @@ rte_find(net *net, struct rte_src *src)
 }
 
 struct rte_storage *
-rte_store(struct rtable *tab, const rte *r, net *n)
+rte_store(rtable_private *tab, const rte *r, net *n)
 {
   struct rte_storage *e = sl_alloc(tab->rte_slab);
   *e = (struct rte_storage) {
@@ -342,7 +342,7 @@ rte_cow_rta(const struct rte_storage *r, linpool *lp)
  * rte_free() deletes the given &rte from the routing table it's linked to.
  */
 void
-rte_free(struct rtable *tab, struct rte_storage *e)
+rte_free(rtable_private *tab, struct rte_storage *e)
 {
   rt_unlock_source(e->src);
   rta_free(e->attrs);
@@ -551,7 +551,11 @@ do_rt_notify(struct channel *c, net *net, rte *new, struct rte_storage *old, int
   p->rt_notify(p, c, net->n.addr, new, c->out_table ? old_exported : old);
 
   if (c->out_table && old_exported)
-    rte_free(c->out_table, old_exported);
+  {
+    RT_LOCK(c->out_table);
+    rte_free(RT_PRIV(c->out_table), old_exported);
+    RT_UNLOCK(c->out_table);
+  }
 }
 
 static void
@@ -790,7 +794,7 @@ rt_notify_merged(struct channel *c, net *net, struct rte_storage *new_changed, s
  * done outside of scope of rte_announce().
  */
 static void
-rte_announce(rtable *tab, net *net, struct rte_storage *new, struct rte_storage *old,
+rte_announce(rtable_private *tab, net *net, struct rte_storage *new, struct rte_storage *old,
 	     struct rte_storage *new_best, struct rte_storage *old_best)
 {
   if (!rte_is_valid(new))
@@ -869,7 +873,7 @@ static void NONNULL(1,2,3)
 rte_recalculate(struct channel *c, net *net, rte *new, _Bool filtered)
 {
   struct proto *p = c->proto;
-  struct rtable *table = c->table;
+  rtable_private *table = RT_PRIV(c->table);
   struct proto_stats *stats = &c->stats;
   struct rte_storage *old_best = net->routes;
   struct rte_storage *old = NULL, **before_old = NULL;
@@ -1248,22 +1252,26 @@ rte_update2(struct channel *c, rte *new)
 	}
     }
 
+  RT_LOCK(c->table);
+  rtable_private *table = RT_PRIV(c->table);
+
   /* Find a table record */
   net *nn;
 
   if (new->attrs && (!filtered || c->in_keep_filtered))
     /* This is an update and it shall pass to the table */
-    nn = net_get(c->table, new->net);
+    nn = net_get(table, new->net);
   else
   {
     /* This is a withdraw and it need not be in the table */
-    nn = net_find(c->table, new->net);
+    nn = net_find(table, new->net);
 
     if (!nn) /* No previous table record found */
     {
       if (!new->attrs) /* Regular withdraw */
 	stats->imp_withdraws_ignored++;
 
+      RT_UNLOCK(c->table);
       rte_update_unlock();
       return;
     }
@@ -1274,6 +1282,7 @@ rte_update2(struct channel *c, rte *new)
 
   /* And recalculate the best route */
   rte_recalculate(c, nn, new, filtered);
+  RT_UNLOCK(c->table);
   rte_update_unlock();
   return;
 
@@ -1293,7 +1302,7 @@ rte_update2(struct channel *c, rte *new)
 /* Independent call to rte_announce(), used from next hop
    recalculation, outside of rte_update(). new must be non-NULL */
 static inline void
-rte_announce_i(rtable *tab, net *net,
+rte_announce_i(rtable_private *tab, net *net,
     struct rte_storage *new, struct rte_storage *old,
     struct rte_storage *new_best, struct rte_storage *old_best)
 {
@@ -1338,13 +1347,15 @@ rte_modify(struct rte_storage *old)
 void
 rt_refresh_begin(rtable *t, struct channel *c)
 {
-  FIB_WALK(&t->fib, net, n)
+  RT_LOCK(t);
+  FIB_WALK(&RT_PRIV(t)->fib, net, n)
     {
       for (struct rte_storage *e = n->routes; e; e = e->next)
 	if (e->sender == c)
 	  e->flags |= REF_STALE;
     }
   FIB_WALK_END;
+  RT_UNLOCK(t);
 }
 
 /**
@@ -1360,7 +1371,8 @@ rt_refresh_end(rtable *t, struct channel *c)
 {
   int prune = 0;
 
-  FIB_WALK(&t->fib, net, n)
+  RT_LOCK(t);
+  FIB_WALK(&RT_PRIV(t)->fib, net, n)
     {
       for (struct rte_storage *e = n->routes; e; e = e->next)
 	if ((e->sender == c) && (e->flags & REF_STALE))
@@ -1372,7 +1384,9 @@ rt_refresh_end(rtable *t, struct channel *c)
   FIB_WALK_END;
 
   if (prune)
-    rt_schedule_prune(t);
+    rt_schedule_prune(RT_PRIV(t));
+
+  RT_UNLOCK(t);
 }
 
 void
@@ -1380,7 +1394,8 @@ rt_modify_stale(rtable *t, struct channel *c)
 {
   int prune = 0;
 
-  FIB_WALK(&t->fib, net, n)
+  RT_LOCK(t);
+  FIB_WALK(&RT_PRIV(t)->fib, net, n)
     {
       for (struct rte_storage *e = n->routes; e; e = e->next)
 	if ((e->sender == c) && (e->flags & REF_STALE) && !(e->flags & REF_FILTERED))
@@ -1392,7 +1407,9 @@ rt_modify_stale(rtable *t, struct channel *c)
   FIB_WALK_END;
 
   if (prune)
-    rt_schedule_prune(t);
+    rt_schedule_prune(RT_PRIV(t));
+
+  RT_UNLOCK(t);
 }
 
 /**
@@ -1422,16 +1439,18 @@ void
 rt_dump(rtable *t)
 {
   debug("Dump of routing table <%s>\n", t->name);
+  RT_LOCK(t);
 #ifdef DEBUGGING
-  fib_check(&t->fib);
+  fib_check(&RT_PRIV(t)->fib);
 #endif
-  FIB_WALK(&t->fib, net, n)
+  FIB_WALK(&RT_PRIV(t)->fib, net, n)
     {
       for(struct rte_storage *e=n->routes; e; e=e->next)
 	rte_dump(e);
     }
   FIB_WALK_END;
   debug("\n");
+  RT_UNLOCK(t);
 }
 
 /**
@@ -1450,7 +1469,7 @@ rt_dump_all(void)
 }
 
 static inline void
-rt_schedule_hcu(rtable *tab)
+rt_schedule_hcu(rtable_private *tab)
 {
   if (tab->hcu_scheduled)
     return;
@@ -1466,14 +1485,15 @@ rt_schedule_nhu(rtable *tab)
    *   NHU_CLEAN   -> NHU_SCHEDULED
    *   NHU_RUNNING -> NHU_DIRTY
    */
-  tab->nhu_state |= NHU_SCHEDULED;
-
-  if (tab->nhu_state == NHU_SCHEDULED)
+  if (atomic_fetch_or_explicit(
+	&tab->nhu_state,
+	NHU_SCHEDULED,
+	memory_order_release) == NHU_CLEAN)
     bsem_post(tab->maint_sem);
 }
 
 void
-rt_schedule_prune(rtable *tab)
+rt_schedule_prune(rtable_private *tab)
 {
   /* state change 0->1, 2->3 */
   tab->prune_state |= 1;
@@ -1486,18 +1506,19 @@ rt_schedule_prune(rtable *tab)
 static void
 rt_maint(void *ptr)
 {
-  rtable *tab = ptr;
+  /* Running standalone in independent context. Be aware. */
+  rtable_private *tab = RT_PRIV((rtable *) ptr);
 
   for (_Bool finished = 0; !finished; )
   {
     bsem_wait(tab->maint_sem);
 
-    the_bird_lock();
+    RT_LOCK_I(tab);
 
     if (tab->hcu_scheduled)
       rt_update_hostcache(tab);
 
-    if (tab->nhu_state)
+    if (atomic_load_explicit(&tab->nhu_state, memory_order_acquire))
       rt_next_hop_update(tab);
 
     if (tab->prune_state)
@@ -1505,18 +1526,21 @@ rt_maint(void *ptr)
 
     if (!tab->use_count && tab->deleted)
     {
+      RT_UNLOCK_I(tab);
+      /* For here, we may simply unlock as nobody knows about the table anyway. */
+      the_bird_lock();
       rfree(tab);
       the_bird_unlock();
       return;
     }
   
-    the_bird_unlock();
+    RT_UNLOCK_I(tab);
   }
 }
 
 
 static inline btime
-rt_settled_time(rtable *tab)
+rt_settled_time(rtable_private *tab)
 {
   ASSUME(tab->base_settle_time != 0);
 
@@ -1527,16 +1551,17 @@ rt_settled_time(rtable *tab)
 static void
 rt_settle_timer(timer *t)
 {
-  rtable *tab = t->data;
+  rtable_private *tab = RT_PRIV((rtable *) t->data);
+  RT_LOCK(tab);
 
   if (!tab->base_settle_time)
-    return;
+    goto done;
 
   btime settled_time = rt_settled_time(tab);
   if (current_time() < settled_time)
   {
     tm_set(tab->settle_timer, settled_time);
-    return;
+    goto done;
   }
 
   /* Settled */
@@ -1545,10 +1570,13 @@ rt_settle_timer(timer *t)
   struct rt_subscription *s;
   WALK_LIST(s, tab->subscribers)
     s->hook(s);
+
+done:
+  RT_UNLOCK(tab);
 }
 
 static void
-rt_kick_settle_timer(rtable *tab)
+rt_kick_settle_timer(rtable_private *tab)
 {
   tab->base_settle_time = current_time();
 
@@ -1560,7 +1588,7 @@ rt_kick_settle_timer(rtable *tab)
 }
 
 static inline void
-rt_schedule_notify(rtable *tab)
+rt_schedule_notify(rtable_private *tab)
 {
   if (EMPTY_LIST(tab->subscribers))
     return;
@@ -1572,54 +1600,75 @@ rt_schedule_notify(rtable *tab)
 }
 
 void
-rt_subscribe(rtable *tab, struct rt_subscription *s)
+rt_subscribe(rtable *tab_, struct rt_subscription *s)
 {
-  s->tab = tab;
+  s->tab = tab_;
+
+  RT_LOCK(tab_);
+  rtable_private *tab = RT_PRIV(tab_);
+
   rt_lock_table(tab);
   add_tail(&tab->subscribers, &s->n);
+
+  RT_UNLOCK(tab_);
 }
 
 void
 rt_unsubscribe(struct rt_subscription *s)
 {
+  ASSERT_DIE(s->tab);
+  RT_LOCK(s->tab);
+
   rem_node(&s->n);
-  rt_unlock_table(s->tab);
+  rt_unlock_table(RT_PRIV(s->tab));
+
+  RT_UNLOCK(s->tab);
+  s->tab = NULL;
 }
 
 static void
 rt_free(resource *_r)
 {
-  rtable *r = (rtable *) _r;
+  /* Should be called always from rt_maint() */
+  rtable_private *r = (rtable_private *) _r;
   struct config *conf = r->deleted;
 
   DBG("Deleting routing table %s\n", r->name);
   ASSERT_DIE(r->use_count == 0);
 
   if (r->internal)
-    return;
+    DOMAIN_FREE(rtable_internal, r->idom);
+  else
+  {
+    if (r->hostcache)
+      rt_free_hostcache(r);
 
-  if (r->hostcache)
-    rt_free_hostcache(r);
-
-  r->config->table = NULL;
-  rem_node(&r->n);
+    r->config->table = NULL;
+    DOMAIN_FREE(rtable, r->dom);
+  }
 
   rfree(r->rp);
 
-  config_del_obstacle(conf);
+  if (conf)
+    config_del_obstacle(conf);
 }
 
 static void
 rt_res_dump(resource *_r)
 {
-  rtable *r = (rtable *) _r;
+  rtable *rr = (rtable *) _r;
+  RT_LOCK(rr);
+  rtable_private *r = RT_PRIV(rr);
+
   debug("name \"%s\", addr_type=%s, rt_count=%u, use_count=%d\n",
       r->name, net_label[r->addr_type], r->rt_count, r->use_count);
+
+  RT_UNLOCK(rr);
 }
 
 static struct resclass rt_class = {
   .name = "Routing table",
-  .size = sizeof(struct rtable),
+  .size = sizeof(rtable),
   .free = rt_free,
   .dump = rt_res_dump,
   .lookup = NULL,
@@ -1636,7 +1685,8 @@ rt_setup(pool *pp, struct rtable_config *cf)
   pool *p = rp_new(pp, nb);
   mb_move(nb, p);
 
-  rtable *t = ralloc(p, &rt_class);
+  rtable *tu = ralloc(p, &rt_class);
+  rtable_private *t = RT_PRIV(tu);
   t->rp = p;
 
   t->name = cf->name;
@@ -1646,8 +1696,13 @@ rt_setup(pool *pp, struct rtable_config *cf)
   fib_init(&t->fib, p, t->addr_type, sizeof(net), OFFSETOF(net, n), 0, NULL);
   t->rte_slab = sl_new(p, sizeof(struct rte_storage));
 
-  if (!(t->internal = cf->internal))
+
+  if (t->internal = cf->internal)
+    t->idom = DOMAIN_NEW(rtable_internal, t->name);
+  else
   {
+    t->dom = DOMAIN_NEW(rtable, t->name);
+
     init_list(&t->channels);
     hmap_init(&t->id_map, p, 1024);
     hmap_set(&t->id_map, 0);
@@ -1660,7 +1715,7 @@ rt_setup(pool *pp, struct rtable_config *cf)
     t->maint_coro = coro_run(p, rt_maint, t);
   }
 
-  return t;
+  return tu;
 }
 
 /**
@@ -1694,7 +1749,7 @@ rt_init(void)
  * iteration.
  */
 static void
-rt_prune_table(rtable *tab)
+rt_prune_table(rtable_private *tab)
 {
   struct fib_iterator *fit = &tab->prune_fit;
   int limit = 512;
@@ -1921,7 +1976,7 @@ no_nexthop:
 }
 
 static inline struct rte_storage *
-rt_next_hop_update_rte(rtable *tab, struct rte_storage *old)
+rt_next_hop_update_rte(rtable_private *tab, struct rte_storage *old)
 {
   rta *a = alloca(RTA_MAX_SIZE);
   memcpy(a, old->attrs, rta_size(old->attrs));
@@ -1947,7 +2002,7 @@ rt_next_hop_update_rte(rtable *tab, struct rte_storage *old)
 }
 
 static inline int
-rt_next_hop_update_net(rtable *tab, net *n)
+rt_next_hop_update_net(rtable_private *tab, net *n)
 {
   struct rte_storage *new;
   int count = 0;
@@ -2024,18 +2079,20 @@ rt_next_hop_update_net(rtable *tab, net *n)
 }
 
 static void
-rt_next_hop_update(rtable *tab)
+rt_next_hop_update(rtable_private *tab)
 {
   struct fib_iterator *fit = &tab->nhu_fit;
   int max_feed = 32;
 
-  if (tab->nhu_state == NHU_CLEAN)
+  byte nhu_state = atomic_load_explicit(&tab->nhu_state, memory_order_acquire);
+
+  if (nhu_state == NHU_CLEAN)
     return;
 
-  if (tab->nhu_state == NHU_SCHEDULED)
+  if (nhu_state == NHU_SCHEDULED)
     {
       FIB_ITERATE_INIT(fit, &tab->fib);
-      tab->nhu_state = NHU_RUNNING;
+      atomic_store_explicit(&tab->nhu_state, NHU_RUNNING, memory_order_release);
     }
 
   FIB_ITERATE_START(&tab->fib, fit, net, n)
@@ -2054,9 +2111,7 @@ rt_next_hop_update(rtable *tab)
    *   NHU_DIRTY   -> NHU_SCHEDULED
    *   NHU_RUNNING -> NHU_CLEAN
    */
-  tab->nhu_state &= 1;
-
-  if (tab->nhu_state != NHU_CLEAN)
+  if ((atomic_fetch_and_explicit(&tab->nhu_state, 1, memory_order_acq_rel) & 1) != NHU_CLEAN)
     bsem_post(tab->maint_sem);
 }
 
@@ -2098,7 +2153,7 @@ rt_new_table(struct symbol *s, uint addr_type)
  * configuration.
  */
 void
-rt_lock_table(rtable *r)
+rt_lock_table(rtable_private *r)
 {
   r->use_count++;
 }
@@ -2112,7 +2167,7 @@ rt_lock_table(rtable *r)
  * the table and finish.
  */
 void
-rt_unlock_table(rtable *r)
+rt_unlock_table(rtable_private *r)
 {
   r->use_count--;
 
@@ -2149,14 +2204,16 @@ rt_commit(struct config *new, struct config *old)
     {
       WALK_LIST(o, old->tables)
 	{
-	  rtable *ot = o->table;
+	  rtable *otu = o->table;
+	  RT_LOCK(otu);
+	  rtable_private *ot = RT_PRIV(otu);
 	  if (!ot->deleted)
 	    {
 	      r = rt_find_table_config(new, o->name);
 	      if (r && (r->addr_type == o->addr_type) && !new->shutdown)
 		{
 		  DBG("\t%s: same\n", o->name);
-		  r->table = ot;
+		  r->table = otu;
 		  ot->name = r->name;
 		  ot->config = r;
 		  if (o->sorted != r->sorted)
@@ -2167,9 +2224,11 @@ rt_commit(struct config *new, struct config *old)
 		  DBG("\t%s: deleted\n", o->name);
 		  ot->deleted = old;
 		  config_add_obstacle(old);
+		  rem_node(&ot->n);
 		  bsem_post(ot->maint_sem); /* Allow the maint_coro to finish. */
 		}
 	    }
+	  RT_UNLOCK(otu);
 	}
     }
 
@@ -2211,20 +2270,24 @@ rt_feed_channel(struct channel *c)
   struct fib_iterator *fit = &c->feed_fit;
   int max_feed = 256;
 
+  RT_LOCK(c->table);
+  rtable_private *tab = RT_PRIV(c->table);
+
   ASSERT(c->export_state == ES_FEEDING);
 
   if (!c->feed_active)
     {
-      FIB_ITERATE_INIT(fit, &c->table->fib);
+      FIB_ITERATE_INIT(fit, &tab->fib);
       c->feed_active = 1;
     }
 
-  FIB_ITERATE_START(&c->table->fib, fit, net, n)
+  FIB_ITERATE_START(&tab->fib, fit, net, n)
     {
       struct rte_storage *e = n->routes;
       if (max_feed <= 0)
 	{
 	  FIB_ITERATE_PUT(fit);
+	  RT_UNLOCK(tab);
 	  return 0;
 	}
 
@@ -2259,6 +2322,7 @@ rt_feed_channel(struct channel *c)
 
 done:
   c->feed_active = 0;
+  RT_UNLOCK(tab);
   return 1;
 }
 
@@ -2272,12 +2336,14 @@ done:
 void
 rt_feed_channel_abort(struct channel *c)
 {
+  RT_LOCK(c->table);
   if (c->feed_active)
     {
       /* Unlink the iterator */
-      fit_get(&c->table->fib, &c->feed_fit);
+      fit_get(&RT_PRIV(c->table)->fib, &c->feed_fit);
       c->feed_active = 0;
     }
+  RT_UNLOCK(c->table);
 }
 
 
@@ -2288,7 +2354,8 @@ rt_feed_channel_abort(struct channel *c)
 static int
 rte_update_in(struct channel *c, rte *new)
 {
-  struct rtable *tab = c->in_table;
+  RT_LOCK(c->in_table);
+  rtable_private *tab = RT_PRIV(c->in_table);
   struct rte_storage *old, **pos;
   net *net;
 
@@ -2317,6 +2384,7 @@ rte_update_in(struct channel *c, rte *new)
 	if (old->flags & (REF_STALE | REF_DISCARD | REF_MODIFY))
 	{
 	  old->flags &= ~(REF_STALE | REF_DISCARD | REF_MODIFY);
+	  RT_UNLOCK(c->in_table);
 	  return 1;
 	}
 
@@ -2343,6 +2411,7 @@ rte_update_in(struct channel *c, rte *new)
     if (!net->routes)
       fib_delete(&tab->fib, net);
 
+    RT_UNLOCK(c->in_table);
     return 1;
   }
 
@@ -2366,6 +2435,7 @@ rte_update_in(struct channel *c, rte *new)
   e->next = *pos;
   *pos = e;
   tab->rt_count++;
+  RT_UNLOCK(c->in_table);
   return 1;
 
 drop_update:
@@ -2375,18 +2445,22 @@ drop_update:
   if (!net->routes)
     fib_delete(&tab->fib, net);
 
+  RT_UNLOCK(c->in_table);
   return 0;
 
 drop_withdraw:
   c->stats.imp_withdraws_received++;
   c->stats.imp_withdraws_ignored++;
+
+  RT_UNLOCK(c->in_table);
   return 0;
 }
 
 int
 rt_reload_channel(struct channel *c)
 {
-  struct rtable *tab = c->in_table;
+  RT_LOCK(c->in_table);
+  rtable_private *tab = RT_PRIV(c->in_table);
   struct fib_iterator *fit = &c->reload_fit;
   int max_feed = 64;
 
@@ -2405,6 +2479,7 @@ rt_reload_channel(struct channel *c)
       {
 	c->reload_next_rte = e;
 	debug("%s channel reload burst split (max_feed=%d)", c->proto->name, max_feed);
+	RT_UNLOCK(c->in_table);
 	return 0;
       }
 
@@ -2427,25 +2502,32 @@ rt_reload_channel(struct channel *c)
   while (c->reload_next_rte);
 
   c->reload_active = 0;
+  RT_UNLOCK(c->in_table);
   return 1;
 }
 
 void
 rt_reload_channel_abort(struct channel *c)
 {
+  RT_LOCK(c->in_table);
+
   if (c->reload_active)
   {
     /* Unlink the iterator */
-    fit_get(&c->in_table->fib, &c->reload_fit);
+    fit_get(&RT_PRIV(c->in_table)->fib, &c->reload_fit);
     c->reload_next_rte = NULL;
     c->reload_active = 0;
   }
+
+  RT_UNLOCK(c->in_table);
 }
 
 void
-rt_prune_sync(rtable *t, int all)
+rt_prune_sync(rtable *_t, int all)
 {
   struct fib_iterator fit;
+  RT_LOCK(_t);
+  rtable_private *t = RT_PRIV(_t);
 
   FIB_ITERATE_INIT(&fit, &t->fib);
 
@@ -2474,6 +2556,8 @@ again:
     }
   }
   FIB_ITERATE_END;
+
+  RT_UNLOCK(t);
 }
 
 
@@ -2484,7 +2568,8 @@ again:
 int
 rte_update_out(struct channel *c, rte *new, struct rte_storage *old, struct rte_storage **old_stored)
 {
-  struct rtable *tab = c->out_table;
+  RT_LOCK(c->out_table);
+  rtable_private *tab = RT_PRIV(c->out_table);
   struct rte_storage **pos;
   net *net;
 
@@ -2538,7 +2623,8 @@ rte_update_out(struct channel *c, rte *new, struct rte_storage *old, struct rte_
 
     if (!net->routes)
       fib_delete(&tab->fib, net);
-
+    
+    RT_UNLOCK(c->out_table);
     return 1;
   }
 
@@ -2550,9 +2636,11 @@ rte_update_out(struct channel *c, rte *new, struct rte_storage *old, struct rte_
   e->next = *pos;
   *pos = e;
   tab->rt_count++;
+  RT_UNLOCK(c->out_table);
   return 1;
 
 drop:
+  RT_UNLOCK(c->out_table);
   return 0;
 }
 
@@ -2565,11 +2653,13 @@ rt_refeed_channel(struct channel *c, struct bmap *seen)
     return;
   }
 
+  RT_LOCK(c->out_table);
+  rtable_private *tab = RT_PRIV(c->out_table);
 
   if (c->proto->feed_begin)
     c->proto->feed_begin(c, 0);
 
-  FIB_WALK(&c->out_table->fib, net, n)
+  FIB_WALK(&tab->fib, net, n)
   {
     for (struct rte_storage *r = n->routes; r; r = r->next)
     {
@@ -2583,6 +2673,8 @@ rt_refeed_channel(struct channel *c, struct bmap *seen)
   
   if (c->proto->feed_end)
     c->proto->feed_end(c);
+
+  RT_UNLOCK(c->out_table);
 }
 
 void
@@ -2590,17 +2682,20 @@ rt_refeed_channel_net(struct channel *c, const net_addr *n)
 {
   if (c->out_table)
   {
-    net *nn = net_find(c->out_table, n);
+    RT_LOCK(c->out_table);
+    net *nn = net_find(RT_PRIV(c->out_table), n);
     if (nn)
       for (struct rte_storage *r = nn->routes; r; r = r->next)
       {
 	rte e = rte_copy(r);
 	c->proto->rt_notify(c->proto, c, n, &e, NULL);
       }
+    RT_UNLOCK(c->out_table);
   }
   else
   {
-    net *nn = net_find(c->table, n);
+    RT_LOCK(c->table);
+    net *nn = net_find(RT_PRIV(c->table), n);
     if (nn)
       if (c->ra_mode == RA_ANY)
       {
@@ -2610,6 +2705,7 @@ rt_refeed_channel_net(struct channel *c, const net_addr *n)
       }
       else if (nn->routes && rte_is_valid(nn->routes))
 	do_feed_channel(c, nn, nn->routes);
+    RT_UNLOCK(c->table);
   }
 }
 
@@ -2619,7 +2715,9 @@ rt_flush_channel(struct channel *c)
   ASSERT_DIE(c->out_table);
   ASSERT_DIE(c->ra_mode != RA_ANY);
 
-  FIB_WALK(&c->out_table->fib, net, n)
+  RT_LOCK(c->out_table);
+
+  FIB_WALK(&RT_PRIV(c->out_table)->fib, net, n)
   {
     if (!n->routes)
       continue;
@@ -2627,6 +2725,8 @@ rt_flush_channel(struct channel *c)
     c->proto->rt_notify(c->proto, c, n->n.addr, NULL, n->routes);
   }
   FIB_WALK_END;
+
+  RT_UNLOCK(c->out_table);
 }
 
 
@@ -2733,7 +2833,7 @@ hc_delete_hostentry(struct hostcache *hc, pool *p, struct hostentry *he)
 }
 
 static void
-rt_init_hostcache(rtable *tab)
+rt_init_hostcache(rtable_private *tab)
 {
   struct hostcache *hc = mb_allocz(tab->rp, sizeof(struct hostcache));
   init_list(&hc->hostentries);
@@ -2749,7 +2849,7 @@ rt_init_hostcache(rtable *tab)
 }
 
 static void
-rt_free_hostcache(rtable *tab)
+rt_free_hostcache(rtable_private *tab)
 {
   struct hostcache *hc = tab->hostcache;
 
@@ -2772,7 +2872,7 @@ rt_free_hostcache(rtable *tab)
 }
 
 static void
-rt_notify_hostcache(rtable *tab, net *net)
+rt_notify_hostcache(rtable_private *tab, net *net)
 {
   if (tab->hcu_scheduled)
     return;
@@ -2842,7 +2942,7 @@ rt_get_igp_metric(rta *a)
 }
 
 static int
-rt_update_hostentry(rtable *tab, struct hostentry *he)
+rt_update_hostentry(rtable_private *tab, struct hostentry *he)
 {
   rta *old_src = he->src;
   int direct = 0;
@@ -2902,7 +3002,7 @@ done:
 }
 
 static void
-rt_update_hostcache(rtable *tab)
+rt_update_hostcache(rtable_private *tab)
 {
   struct hostcache *hc = tab->hostcache;
   struct hostentry *he;
@@ -2929,7 +3029,7 @@ rt_update_hostcache(rtable *tab)
 }
 
 struct hostentry *
-rt_get_hostentry(rtable *tab, ip_addr a, ip_addr ll, rtable *dep)
+rt_get_hostentry(rtable_private *tab, ip_addr a, ip_addr ll, rtable *dep)
 {
   struct hostentry *he;
 

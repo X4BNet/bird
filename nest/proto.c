@@ -111,7 +111,7 @@ proto_cf_find_channel(struct proto_config *pc, uint net_type)
  * Returns pointer to channel or NULL
  */
 struct channel *
-proto_find_channel_by_table(struct proto *p, struct rtable *t)
+proto_find_channel_by_table(struct proto *p, rtable *t)
 {
   struct channel *c;
 
@@ -386,7 +386,7 @@ static void
 channel_roa_subscribe_filter(struct channel *c, int dir)
 {
   const struct filter *f = dir ? c->in_filter : c->out_filter;
-  struct rtable *tab;
+  rtable *tab;
   int valid = 1, found = 0;
 
   if ((f == FILTER_ACCEPT) || (f == FILTER_REJECT))
@@ -548,9 +548,14 @@ channel_setup_out_table(struct channel *c)
 static void
 channel_do_start(struct channel *c)
 {
-  rt_lock_table(c->table);
-  add_tail(&c->table->channels, &c->table_node);
-  c->proto->active_channels++;
+  RT_LOCK(c->table);
+  {
+    rtable_private *ptab = RT_PRIV(c->table);
+    rt_lock_table(ptab);
+    add_tail(&ptab->channels, &c->table_node);
+    c->proto->active_channels++;
+  }
+  RT_UNLOCK(c->table);
 
   c->feed_event = ev_new_init(c->proto->pool, channel_feed_loop, c);
 
@@ -579,7 +584,9 @@ channel_do_up(struct channel *c)
 static void
 channel_do_flush(struct channel *c)
 {
-  rt_schedule_prune(c->table);
+  RT_LOCK(c->table);
+  rt_schedule_prune(RT_PRIV(c->table));
+  RT_UNLOCK(c->table);
 
   c->gr_wait = 0;
   if (c->gr_lock)
@@ -602,9 +609,14 @@ channel_do_down(struct channel *c)
 {
   ASSERT(!c->feed_active && !c->reload_active);
 
-  rem_node(&c->table_node);
-  rt_unlock_table(c->table);
-  c->proto->active_channels--;
+  RT_LOCK(c->table);
+  {
+    rtable_private *ptab = RT_PRIV(c->table);
+    rem_node(&c->table_node);
+    rt_unlock_table(ptab);
+    c->proto->active_channels--;
+  }
+  RT_UNLOCK(c->table);
 
   if ((c->stats.imp_routes + c->stats.filt_routes) != 0)
     log(L_ERR "%s: Channel %s is down but still has some routes", c->proto->name, c->name);

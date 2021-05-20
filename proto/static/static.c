@@ -94,7 +94,9 @@ static_announce_rte(struct static_proto *p, struct static_route *r)
   if (r->dest == RTDX_RECURSIVE)
   {
     rtable *tab = ipa_is_ip4(r->via) ? p->igp_table_ip4 : p->igp_table_ip6;
-    rta_set_recursive_next_hop(p->p.main_channel->table, a, tab, r->via, IPA_NONE, r->mls);
+    RT_LOCK(tab);
+    rta_set_recursive_next_hop(p->p.main_channel->table, a, RT_PRIV(tab), r->via, IPA_NONE, r->mls);
+    RT_UNLOCK(tab);
   }
 
   /* Already announced */
@@ -479,10 +481,18 @@ static_start(struct proto *P)
     static_lp = lp_new(&root_pool, LP_GOOD_SIZE(1024));
 
   if (p->igp_table_ip4)
-    rt_lock_table(p->igp_table_ip4);
+  {
+    RT_LOCK(p->igp_table_ip4);
+    rt_lock_table(RT_PRIV(p->igp_table_ip4));
+    RT_UNLOCK(p->igp_table_ip4);
+  }
 
   if (p->igp_table_ip6)
-    rt_lock_table(p->igp_table_ip6);
+  {
+    RT_LOCK(p->igp_table_ip6);
+    rt_lock_table(RT_PRIV(p->igp_table_ip6));
+    RT_UNLOCK(p->igp_table_ip6);
+  }
 
   p->event = ev_new_init(p->p.pool, static_announce_marked, p);
 
@@ -517,10 +527,18 @@ static_cleanup(struct proto *P)
   struct static_proto *p = (void *) P;
 
   if (p->igp_table_ip4)
-    rt_unlock_table(p->igp_table_ip4);
+  {
+    RT_LOCK(p->igp_table_ip4);
+    rt_unlock_table(RT_PRIV(p->igp_table_ip4));
+    RT_UNLOCK(p->igp_table_ip4);
+  }
 
   if (p->igp_table_ip6)
-    rt_unlock_table(p->igp_table_ip6);
+  {
+    RT_LOCK(p->igp_table_ip6);
+    rt_unlock_table(RT_PRIV(p->igp_table_ip6));
+    RT_UNLOCK(p->igp_table_ip6);
+  }
 }
 
 static void

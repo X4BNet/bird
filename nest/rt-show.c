@@ -32,7 +32,8 @@ rt_show_table(struct cli *c, struct rt_show_data *d)
 static inline struct krt_proto *
 rt_show_get_kernel(struct rt_show_data *d)
 {
-  struct proto_config *krt = d->tab->table->config->krt_attached;
+  ASSERT_DIE(d->tab_priv);
+  struct proto_config *krt = d->tab_priv->config->krt_attached;
   return krt ? (struct krt_proto *) krt->proto : NULL;
 }
 
@@ -203,11 +204,20 @@ rt_show_cleanup(struct cli *c)
 
   /* Unlink the iterator */
   if (d->table_open)
-    fit_get(&d->tab->table->fib, &d->fit);
+  {
+    ASSERT_DIE(!d->tab_priv);
+    RT_LOCK(d->tab->table);
+    fit_get(&RT_PRIV(d->tab->table)->fib, &d->fit);
+    RT_UNLOCK(d->tab->table);
+  }
 
   /* Unlock referenced tables */
   WALK_LIST(tab, d->tables)
-    rt_unlock_table(tab->table);
+  {
+    RT_LOCK(tab->table);
+    rt_unlock_table(RT_PRIV(tab->table));
+    RT_UNLOCK(tab->table);
+  }
 }
 
 static void
@@ -219,7 +229,6 @@ rt_show_cont(struct cli *c)
 #else
   unsigned max = 64;
 #endif
-  struct fib *fib = &d->tab->table->fib;
   struct fib_iterator *it = &d->fit;
 
   if (d->running_on_config && (d->running_on_config != config))
@@ -228,9 +237,15 @@ rt_show_cont(struct cli *c)
     goto done;
   }
 
+  ASSERT_DIE(!d->tab_priv);
+  RT_LOCK(d->tab->table);
+  d->tab_priv = RT_PRIV(d->tab->table);
+
+  struct fib *fib = &d->tab_priv->fib;
+
   if (!d->table_open)
   {
-    FIB_ITERATE_INIT(&d->fit, &d->tab->table->fib);
+    FIB_ITERATE_INIT(&d->fit, fib);
     d->table_open = 1;
     d->table_counter++;
     d->kernel = rt_show_get_kernel(d);
@@ -248,6 +263,8 @@ rt_show_cont(struct cli *c)
     if (!max--)
     {
       FIB_ITERATE_PUT(it);
+      RT_UNLOCK(d->tab_priv);
+      d->tab_priv = NULL;
       return;
     }
     rt_show_net(c, n, d);
@@ -263,6 +280,9 @@ rt_show_cont(struct cli *c)
 	       d->show_counter - d->show_counter_last, d->rt_counter - d->rt_counter_last,
 	       d->net_counter - d->net_counter_last, d->tab->table->name);
   }
+
+  RT_UNLOCK(d->tab_priv);
+  d->tab_priv = NULL;
 
   d->kernel = NULL;
   d->table_open = 0;
@@ -395,7 +415,11 @@ rt_show(struct rt_show_data *d)
   if (!d->addr)
   {
     WALK_LIST(tab, d->tables)
-      rt_lock_table(tab->table);
+    {
+      RT_LOCK(tab->table);
+      rt_lock_table(RT_PRIV(tab->table));
+      RT_UNLOCK(tab->table);
+    }
 
     /* There is at least one table */
     d->tab = HEAD(d->tables);
@@ -407,16 +431,22 @@ rt_show(struct rt_show_data *d)
   {
     WALK_LIST(tab, d->tables)
     {
+      RT_LOCK(tab->table);
+      d->tab_priv = RT_PRIV(d->tab->table);
+
       d->tab = tab;
       d->kernel = rt_show_get_kernel(d);
 
       if (d->show_for)
-	n = net_route(tab->table, d->addr);
+	n = net_route(d->tab_priv, d->addr);
       else
-	n = net_find(tab->table, d->addr);
+	n = net_find(d->tab_priv, d->addr);
 
       if (n)
 	rt_show_net(this_cli, n, d);
+
+      d->tab_priv = NULL;
+      RT_UNLOCK(tab->table);
     }
 
     if (d->rt_counter)

@@ -17,7 +17,6 @@
 
 struct iface;
 struct ifa;
-struct rtable;
 struct rte;
 struct neighbor;
 struct rta;
@@ -228,7 +227,7 @@ struct proto {
    *	   rte_remove	Called whenever a rte is removed from the routing table.
    */
 
-  int (*rte_recalculate)(struct rtable *, struct network *, struct rte_storage *, struct rte_storage *, struct rte_storage *);
+  int (*rte_recalculate)(struct rtable_private *, struct network *, struct rte_storage *, struct rte_storage *, struct rte_storage *);
   int (*rte_better)(struct rte_storage *, struct rte_storage *);
   int (*rte_mergable)(struct rte_storage *, struct rte_storage *);
   struct rta *(*rte_modify)(struct rte_storage *, struct linpool *);
@@ -505,7 +504,7 @@ struct channel {
   const struct channel_class *channel;
   struct proto *proto;
 
-  struct rtable *table;
+  rtable *table;
   const struct filter *in_filter;	/* Input filter */
   const struct filter *out_filter;	/* Output filter */
   struct bmap export_map;		/* Keeps track which routes were really exported */
@@ -539,7 +538,7 @@ struct channel {
 
   btime last_state_change;		/* Time of last state transition */
 
-  struct rtable *in_table;		/* Internal table for received routes */
+  rtable *in_table;			/* Internal table for received routes */
   struct event *reload_event;		/* Event responsible for reloading from in_table */
   struct fib_iterator reload_fit;	/* FIB iterator in in_table used during reloading */
   struct rte_storage *reload_next_rte;	/* Route iterator in in_table used during reloading */
@@ -550,7 +549,7 @@ struct channel {
   u8 rpki_reload;			/* RPKI changes trigger channel reload */
   u8 explicit_flush;			/* Feed by withdrawals on export reset */
 
-  struct rtable *out_table;		/* Internal table for exported routes */
+  rtable *out_table;			/* Internal table for exported routes */
 
   list roa_subscriptions;		/* List of active ROA table subscriptions based on filters roa_check() */
 };
@@ -614,7 +613,7 @@ struct channel_config *proto_cf_find_channel(struct proto_config *p, uint net_ty
 static inline struct channel_config *proto_cf_main_channel(struct proto_config *pc)
 { struct channel_config *cc = HEAD(pc->channels); return NODE_VALID(cc) ? cc : NULL; }
 
-struct channel *proto_find_channel_by_table(struct proto *p, struct rtable *t);
+struct channel *proto_find_channel_by_table(struct proto *p, rtable *t);
 struct channel *proto_find_channel_by_name(struct proto *p, const char *n);
 struct channel *proto_add_channel(struct proto *p, struct channel_config *cf);
 int proto_configure_channel(struct proto *p, struct channel **c, struct channel_config *cf);

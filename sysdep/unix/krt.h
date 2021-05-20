@@ -52,7 +52,7 @@ struct krt_proto {
   struct krt_state sys;		/* Sysdep state */
 
 #ifdef KRT_ALLOW_LEARN
-  struct rtable *krt_table;	/* Internal table of inherited routes */
+  rtable *krt_table;		/* Internal table of inherited routes */
 #endif
 
 #ifndef CONFIG_ALL_TABLES_AT_ONCE
