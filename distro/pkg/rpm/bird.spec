@@ -61,7 +61,7 @@ powerful language for route filtering.
 %setup -q
 
 %build
-%configure --runstatedir=%{_rundir}/bird
+%configure --with-runtimedir=%{_rundir}/bird
 %make_build all %{!?_without_doc:docs}
 
 %install
