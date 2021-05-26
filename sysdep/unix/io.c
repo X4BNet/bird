@@ -2181,7 +2181,7 @@ static int poll_reload_pipe[2];
 void
 io_loop_reload(void)
 {
-  char b;
+  char b = 0;
   write(poll_reload_pipe[1], &b, 1);
 }
 
