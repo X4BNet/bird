@@ -9,6 +9,7 @@
 #ifndef _BIRD_BIRDLIB_H_
 #define _BIRD_BIRDLIB_H_
 
+#include "sysdep/config.h"
 #include "lib/alloca.h"
 
 /* Ugly structure offset handling macros */
@@ -73,10 +74,6 @@ static inline int u64_cmp(u64 i1, u64 i2)
 #define UNUSED __attribute__((unused))
 #define PACKED __attribute__((packed))
 #define NONNULL(...) __attribute__((nonnull(__VA_ARGS__)))
-
-#ifndef HAVE_THREAD_LOCAL
-#define _Thread_local
-#endif
 
 /* Microsecond time */
 

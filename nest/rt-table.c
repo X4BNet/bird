@@ -35,7 +35,8 @@
 #include "nest/protocol.h"
 #include "nest/iface.h"
 #include "lib/resource.h"
-#include "lib/event.h"
+#include "lib/coro.h"
+#include "lib/locking.h"
 #include "lib/timer.h"
 #include "lib/string.h"
 #include "conf/conf.h"
@@ -1448,50 +1449,62 @@ rt_schedule_hcu(rtable *tab)
     return;
 
   tab->hcu_scheduled = 1;
-  ev_schedule(tab->rt_event);
+  bsem_post(tab->maint_sem);
 }
 
 static inline void
 rt_schedule_nhu(rtable *tab)
 {
-  if (tab->nhu_state == NHU_CLEAN)
-    ev_schedule(tab->rt_event);
-
   /* state change:
    *   NHU_CLEAN   -> NHU_SCHEDULED
    *   NHU_RUNNING -> NHU_DIRTY
    */
   tab->nhu_state |= NHU_SCHEDULED;
+
+  if (tab->nhu_state == NHU_SCHEDULED)
+    bsem_post(tab->maint_sem);
 }
 
 void
 rt_schedule_prune(rtable *tab)
 {
-  if (tab->prune_state == 0)
-    ev_schedule(tab->rt_event);
-
   /* state change 0->1, 2->3 */
   tab->prune_state |= 1;
+
+  if (tab->prune_state == 1)
+    bsem_post(tab->maint_sem);
 }
 
 
 static void
-rt_event(void *ptr)
+rt_maint(void *ptr)
 {
   rtable *tab = ptr;
 
-  rt_lock_table(tab);
+  for (_Bool finished = 0; !finished; )
+  {
+    bsem_wait(tab->maint_sem);
 
-  if (tab->hcu_scheduled)
-    rt_update_hostcache(tab);
+    the_bird_lock();
 
-  if (tab->nhu_state)
-    rt_next_hop_update(tab);
+    if (tab->hcu_scheduled)
+      rt_update_hostcache(tab);
 
-  if (tab->prune_state)
-    rt_prune_table(tab);
+    if (tab->nhu_state)
+      rt_next_hop_update(tab);
 
-  rt_unlock_table(tab);
+    if (tab->prune_state)
+      rt_prune_table(tab);
+
+    if (!tab->use_count && tab->deleted)
+    {
+      rfree(tab);
+      the_bird_unlock();
+      return;
+    }
+  
+    the_bird_unlock();
+  }
 }
 
 
@@ -1570,6 +1583,7 @@ static void
 rt_free(resource *_r)
 {
   rtable *r = (rtable *) _r;
+  struct config *conf = r->deleted;
 
   DBG("Deleting routing table %s\n", r->name);
   ASSERT_DIE(r->use_count == 0);
@@ -1577,19 +1591,15 @@ rt_free(resource *_r)
   if (r->internal)
     return;
 
-  r->config->table = NULL;
-  rem_node(&r->n);
-
   if (r->hostcache)
     rt_free_hostcache(r);
 
-  /* Freed automagically by the resource pool
-  fib_free(&r->fib);
-  hmap_free(&r->id_map);
-  rfree(r->rt_event);
-  rfree(r->settle_timer);
-  mb_free(r);
-  */
+  r->config->table = NULL;
+  rem_node(&r->n);
+
+  rfree(r->rp);
+
+  config_del_obstacle(conf);
 }
 
 static void
@@ -1634,10 +1644,12 @@ rt_setup(pool *pp, struct rtable_config *cf)
     hmap_init(&t->id_map, p, 1024);
     hmap_set(&t->id_map, 0);
 
+    t->last_rt_change = t->gc_time = current_time();
+
     init_list(&t->subscribers);
 
-    t->rt_event = ev_new_init(p, rt_event, t);
-    t->last_rt_change = t->gc_time = current_time();
+    t->maint_sem = bsem_new(p);
+    t->maint_coro = coro_run(p, rt_maint, t);
   }
 
   return t;
@@ -1665,7 +1677,7 @@ rt_init(void)
  *
  * The prune loop scans routing tables and removes routes belonging to flushing
  * protocols, discarded routes and also stale network entries. It is called from
- * rt_event(). The event is rescheduled if the current iteration do not finish
+ * rt_maint(). This loop is rescheduled if the current iteration do not finish
  * the table. The pruning is directed by the prune state (@prune_state),
  * specifying whether the prune cycle is scheduled or running, and there
  * is also a persistent pruning iterator (@prune_fit).
@@ -1713,7 +1725,7 @@ again:
 	    if (limit <= 0)
 	      {
 		FIB_ITERATE_PUT(fit);
-		ev_schedule(tab->rt_event);
+		bsem_post(tab->maint_sem);
 		return;
 	      }
 
@@ -1733,7 +1745,7 @@ again:
 	    if (limit <= 0)
 	      {
 		FIB_ITERATE_PUT(fit);
-		ev_schedule(tab->rt_event);
+		bsem_post(tab->maint_sem);
 		return;
 	      }
 
@@ -1764,7 +1776,7 @@ again:
   tab->prune_state &= 1;
 
   if (tab->prune_state > 0)
-    ev_schedule(tab->rt_event);
+    bsem_post(tab->maint_sem);
 
   /* FIXME: This should be handled in a better way */
   rt_prune_sources();
@@ -2024,7 +2036,7 @@ rt_next_hop_update(rtable *tab)
       if (max_feed <= 0)
 	{
 	  FIB_ITERATE_PUT(fit);
-	  ev_schedule(tab->rt_event);
+	  bsem_post(tab->maint_sem);
 	  return;
 	}
       max_feed -= rt_next_hop_update_net(tab, n);
@@ -2038,7 +2050,7 @@ rt_next_hop_update(rtable *tab)
   tab->nhu_state &= 1;
 
   if (tab->nhu_state != NHU_CLEAN)
-    ev_schedule(tab->rt_event);
+    bsem_post(tab->maint_sem);
 }
 
 
@@ -2088,21 +2100,17 @@ rt_lock_table(rtable *r)
  * rt_unlock_table - unlock a routing table
  * @r: routing table to be unlocked
  *
- * Unlock a routing table formerly locked by rt_lock_table(),
- * that is decrease its use count and delete it if it's scheduled
- * for deletion by configuration changes.
+ * Unlock a routing table formerly locked by rt_lock_table().
+ * If scheduled for deletion, ping the maintenance coroutine to delete
+ * the table and finish.
  */
 void
 rt_unlock_table(rtable *r)
 {
-  if (!--r->use_count && r->deleted)
-    {
-      struct config *conf = r->deleted;
+  r->use_count--;
 
-      /* Delete the routing table by freeing its pool */
-      rt_shutdown(r);
-      config_del_obstacle(conf);
-    }
+  if (!r->use_count && r->deleted)
+    bsem_post(r->maint_sem);
 }
 
 static struct rtable_config *
@@ -2152,8 +2160,7 @@ rt_commit(struct config *new, struct config *old)
 		  DBG("\t%s: deleted\n", o->name);
 		  ot->deleted = old;
 		  config_add_obstacle(old);
-		  rt_lock_table(ot);
-		  rt_unlock_table(ot);
+		  bsem_post(ot->maint_sem); /* Allow the maint_coro to finish. */
 		}
 	    }
 	}
