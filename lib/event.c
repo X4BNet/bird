@@ -21,6 +21,10 @@
 
 #include "nest/bird.h"
 #include "lib/event.h"
+#include "lib/locking.h"
+
+extern _Thread_local struct coroutine *this_coro;
+void io_loop_reload(void);
 
 event_list global_event_list;
 event_list global_work_list;
@@ -28,6 +32,7 @@ event_list global_work_list;
 inline void
 ev_postpone(event *e)
 {
+  ASSERT_THE_BIRD_LOCKED;
   if (ev_active(e))
     {
       rem_node(&e->n);
@@ -97,6 +102,7 @@ ev_run(event *e)
 inline void
 ev_enqueue(event_list *l, event *e)
 {
+  ASSERT_THE_BIRD_LOCKED;
   ev_postpone(e);
   add_tail(l, &e->n);
 }
@@ -112,7 +118,10 @@ ev_enqueue(event_list *l, event *e)
 void
 ev_schedule(event *e)
 {
+  ASSERT_THE_BIRD_LOCKED;
   ev_enqueue(&global_event_list, e);
+  if (this_coro)
+    io_loop_reload();
 }
 
 /**
@@ -129,6 +138,9 @@ ev_schedule_work(event *e)
 {
   if (!ev_active(e))
     add_tail(&global_work_list, &e->n);
+
+  if (this_coro)
+    io_loop_reload();
 }
 
 void io_log_event(void *hook, void *data);
