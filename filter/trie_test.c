@@ -179,8 +179,12 @@ main(int argc, char *argv[])
 {
   bt_init(argc, argv);
 
+  the_bird_lock();
+
   bt_test_suite(t_match_net, "Testing random prefix matching");
   bt_test_suite(t_trie_same, "A trie filled forward should be same with a trie filled backward.");
+
+  the_bird_unlock();
 
   return bt_exit_value();
 }

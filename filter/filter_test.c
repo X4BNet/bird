@@ -76,6 +76,8 @@ main(int argc, char *argv[])
 
   bt_assert_hook = bt_assert_filter;
 
+  the_bird_lock();
+
   /* Initial test.conf parsing, must be done here */
   if (!bt_config_file_parse(BT_CONFIG_FILE))
     abort();
@@ -86,6 +88,7 @@ main(int argc, char *argv[])
   WALK_LIST(t, config->tests)
     bt_test_suite_base(run_function, t->fn_name, t, BT_FORKING, BT_TIMEOUT, "%s", t->dsc);
 
+  the_bird_unlock();
   bt_bird_cleanup();
   return bt_exit_value();
 }
