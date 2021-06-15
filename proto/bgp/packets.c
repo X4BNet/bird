@@ -1371,7 +1371,7 @@ bgp_rte_update(struct bgp_parse_state *s, net_addr *n, u32 path_id, rta *a0)
     .attrs = s->cached_rta,
   };
 
-  rte_update(&(s->channel->c), &e0);
+  rte_update(&(s->channel->c), &e0, s->pool);
 }
 
 static void
@@ -2710,7 +2710,7 @@ bgp_rx_route_refresh(struct bgp_conn *conn, byte *pkt, uint len)
   {
   case BGP_RR_REQUEST:
     BGP_TRACE(D_PACKETS, "Got ROUTE-REFRESH");
-    rt_refeed_channel(&c->c, NULL);
+    rt_refeed_channel(&c->c, NULL, the_bird_linpool);
     break;
 
   case BGP_RR_BEGIN:

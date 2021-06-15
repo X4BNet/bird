@@ -217,7 +217,7 @@ rip_announce_rte(struct rip_proto *p, struct rip_entry *en)
       .net = en->n.addr, 
     };
 
-    rte_update(p->p.main_channel, &e0);
+    rte_update(p->p.main_channel, &e0, the_bird_linpool);
   }
   else
     rte_withdraw(p->p.main_channel, en->n.addr, p->p.main_source);
@@ -315,7 +315,7 @@ rip_withdraw_rte(struct rip_proto *p, net_addr *n, struct rip_neighbor *from)
  * it into our data structures.
  */
 static void
-rip_rt_notify(struct proto *P, struct channel *ch UNUSED, const net_addr *net, struct rte *new,
+rip_rt_notify(struct proto *P, struct channel *ch UNUSED, linpool *lp UNUSED, const net_addr *net, struct rte *new,
 	      const struct rte_storage *old UNUSED)
 {
   struct rip_proto *p = (struct rip_proto *) P;

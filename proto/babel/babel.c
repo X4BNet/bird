@@ -686,7 +686,7 @@ babel_announce_rte(struct babel_proto *p, struct babel_entry *e)
     };
 
     e->unreachable = 0;
-    rte_update(c, &e0);
+    rte_update(c, &e0, the_bird_linpool);
   }
   else if (e->valid && (e->router_id != p->router_id))
   {
@@ -705,7 +705,7 @@ babel_announce_rte(struct babel_proto *p, struct babel_entry *e)
     };
 
     e->unreachable = 1;
-    rte_update(c, &e0);
+    rte_update(c, &e0, the_bird_linpool);
   }
   else
   {
@@ -2139,8 +2139,8 @@ babel_preexport(struct channel *c, struct rte *new)
  * so store it into our data structures.
  */
 static void
-babel_rt_notify(struct proto *P, struct channel *c UNUSED, const net_addr *net,
-		struct rte *new, const struct rte_storage *old UNUSED)
+babel_rt_notify(struct proto *P, struct channel *c UNUSED, linpool *lp UNUSED,
+		const net_addr *net, struct rte *new, const struct rte_storage *old UNUSED)
 {
   struct babel_proto *p = (void *) P;
   struct babel_entry *e;

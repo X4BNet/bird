@@ -167,7 +167,7 @@ perf_loop(void *data)
       .src = p->p.main_source,
       .net = &(p->data[i].net),
     };
-    rte_update(P->main_channel, &e0);
+    rte_update(P->main_channel, &e0, the_bird_linpool);
   }
 
   clock_gettime(CLOCK_MONOTONIC, &ts_update);
@@ -212,7 +212,7 @@ perf_loop(void *data)
 }
 
 static void
-perf_rt_notify(struct proto *P, struct channel *c UNUSED, const net_addr *net UNUSED, struct rte *new UNUSED, const struct rte_storage *old UNUSED)
+perf_rt_notify(struct proto *P, struct channel *c UNUSED, linpool *lp UNUSED, const net_addr *net UNUSED, struct rte *new UNUSED, const struct rte_storage *old UNUSED)
 {
   struct perf_proto *p = (struct perf_proto *) P;
   p->exp++;

@@ -78,6 +78,8 @@ extern const int lp_chunk_size;
 #define LP_GOOD_SIZE(x)	    (((x + LP_GAS - 1) & (~(LP_GAS - 1))) - lp_chunk_size)
 #define lp_new_default(p)   lp_new(p, LP_GOOD_SIZE(LP_GAS*4))
 
+extern struct linpool *the_bird_linpool;	/* Use this for temporary allocations in main thread */
+
 /* Slabs */
 
 typedef struct slab slab;

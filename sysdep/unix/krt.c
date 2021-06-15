@@ -301,7 +301,7 @@ krt_learn_announce_update(struct krt_proto *p, struct rte_storage *e)
     .net = e->net->n.addr,
   };
 
-  rte_update(p->p.main_channel, &e0);
+  rte_update(p->p.main_channel, &e0, the_bird_linpool);
 }
 
 static void
@@ -629,7 +629,7 @@ krt_prune(struct krt_proto *p)
   KRT_TRACE(p, D_EVENTS, "Sync finished, pruning table %s", p->p.main_channel->table->name);
 
   p->pruning = 1;
-  rt_refeed_channel(p->p.main_channel, &p->seen_map);
+  rt_refeed_channel(p->p.main_channel, &p->seen_map, the_bird_linpool);
   p->pruning = 0;
 
 #ifdef KRT_ALLOW_LEARN
@@ -788,7 +788,7 @@ krt_preexport(struct channel *c, rte *e)
 }
 
 static void
-krt_rt_notify(struct proto *P, struct channel *ch UNUSED, const net_addr *net,
+krt_rt_notify(struct proto *P, struct channel *ch UNUSED, linpool *lp UNUSED, const net_addr *net,
 	      rte *new, const struct rte_storage *old)
 {
   struct krt_proto *p = (struct krt_proto *) P;
@@ -994,7 +994,7 @@ krt_shutdown(struct proto *P)
 
   /* FIXME we should flush routes even when persist during reconfiguration */
   if (p->initialized && !KRT_CF->persist && (P->down_code != PDC_CMD_GR_DOWN))
-    rt_flush_channel(p->p.main_channel);
+    rt_flush_channel(p->p.main_channel, the_bird_linpool);
 
   p->ready = 0;
   p->initialized = 0;

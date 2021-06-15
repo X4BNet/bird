@@ -49,6 +49,7 @@ static struct resclass pool_class = {
 };
 
 pool root_pool;
+linpool *the_bird_linpool;
 
 static int indent;
 
@@ -262,6 +263,7 @@ resource_init(void)
   root_pool.r.class = &pool_class;
   root_pool.name = "Root";
   init_list(&root_pool.inside);
+  the_bird_linpool = lp_new_default(&root_pool);
 }
 
 /**

@@ -489,7 +489,7 @@ channel_reload_loop(void *ptr)
   if (!c->reload_active)
     c->reload_pending = 0;
 
-  if (!rt_reload_channel(c))
+  if (!rt_reload_channel(c, the_bird_linpool))
   {
     ev_schedule_work(c->reload_event);
     return;
@@ -514,7 +514,7 @@ static void
 channel_reset_export(struct channel *c)
 {
   if (c->explicit_flush)
-    rt_flush_channel(c);
+    rt_flush_channel(c, the_bird_linpool);
 
   /* Just free the routes */
   rt_prune_sync(c->out_table, 1);

@@ -2279,6 +2279,9 @@ io_loop(void)
 	  continue;
 	}
 
+      /* Flush temporary memory */
+      lp_flush(the_bird_linpool);
+
       /* And finally enter poll() to find active sockets */
       watchdog_stop();
       the_bird_unlock();

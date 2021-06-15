@@ -1832,7 +1832,7 @@ bgp_update_attrs(struct bgp_proto *p, struct bgp_channel *c, rte *e, ea_list *at
 }
 
 void
-bgp_rt_notify(struct proto *P, struct channel *C, const net_addr *n, rte *new, const struct rte_storage *old)
+bgp_rt_notify(struct proto *P, struct channel *C, linpool *lp, const net_addr *n, rte *new, const struct rte_storage *old)
 {
   struct bgp_proto *p = (void *) P;
   struct bgp_channel *c = (void *) C;
@@ -1842,13 +1842,11 @@ bgp_rt_notify(struct proto *P, struct channel *C, const net_addr *n, rte *new, c
 
   if (new)
   {
-    struct ea_list *attrs = bgp_update_attrs(p, c, new, new->attrs->eattrs, bgp_linpool2);
+    struct ea_list *attrs = bgp_update_attrs(p, c, new, new->attrs->eattrs, lp);
 
     /* If attributes are invalid, we fail back to withdraw */
     buck = attrs ? bgp_get_bucket(c, attrs) : bgp_get_withdraw_bucket(c);
     path = new->src->global_id;
-
-    lp_flush(bgp_linpool2);
   }
   else
   {

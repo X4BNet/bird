@@ -405,7 +405,7 @@ radv_preexport(struct channel *c, rte *new)
 }
 
 static void
-radv_rt_notify(struct proto *P, struct channel *ch UNUSED, const net_addr *n, rte *new, const struct rte_storage *old UNUSED)
+radv_rt_notify(struct proto *P, struct channel *ch UNUSED, linpool *lp UNUSED, const net_addr *n, rte *new, const struct rte_storage *old UNUSED)
 {
   struct radv_proto *p = (struct radv_proto *) P;
   struct radv_config *cf = (struct radv_config *) (P->cf);
@@ -649,9 +649,7 @@ radv_reconfigure(struct proto *P, struct proto_config *CF)
   if (radv_trigger_valid(new))
   {
     /* Refeed the appropriate route */
-    linpool *lp = lp_new_default(p->p.pool);
-    rt_refeed_channel_net(p->p.main_channel, lp, &new->trigger);
-    rfree(lp);
+    rt_refeed_channel_net(p->p.main_channel, the_bird_linpool, &new->trigger);
 
     /* We were active before but no trigger route has been refeeded */
     if (old_active && p->reconf_trigger)

@@ -48,7 +48,7 @@
 #include "pipe.h"
 
 static void
-pipe_rt_notify(struct proto *P, struct channel *src_ch, const net_addr *n, rte *new, const struct rte_storage *old)
+pipe_rt_notify(struct proto *P, struct channel *src_ch, linpool *lp, const net_addr *n, rte *new, const struct rte_storage *old)
 {
   struct pipe_proto *p = (void *) P;
   struct channel *dst = (src_ch == p->pri) ? p->sec : p->pri;
@@ -72,7 +72,7 @@ pipe_rt_notify(struct proto *P, struct channel *src_ch, const net_addr *n, rte *
 	.generation = new->generation + 1,
       };
 
-      rte_update(dst, &e0);
+      rte_update(dst, &e0, lp);
     }
   else
     rte_withdraw(dst, n, old->src);

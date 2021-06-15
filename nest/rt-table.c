@@ -67,8 +67,6 @@
 
 pool *rt_table_pool;
 
-static linpool *rte_update_pool;
-
 list routing_tables;
 
 /* Data structures for export journal */
@@ -589,7 +587,7 @@ do_rt_notify(struct channel *c, linpool *lp, const net_addr *n, rte *new, struct
     }
   }
 
-  p->rt_notify(p, c, n, new, c->out_table ? old_exported : old);
+  p->rt_notify(p, c, lp, n, new, c->out_table ? old_exported : old);
 
   if (c->out_table && old_exported)
   {
@@ -1769,26 +1767,11 @@ rte_recalculate(struct channel *c, net *net, rte *new, _Bool filtered)
     p->rte_insert(net, new_stored);
 }
 
-static int rte_update_nest_cnt;		/* Nesting counter to allow recursive updates */
-
-static inline void
-rte_update_lock(void)
-{
-  rte_update_nest_cnt++;
-}
-
-static inline void
-rte_update_unlock(void)
-{
-  if (!--rte_update_nest_cnt)
-    lp_flush(rte_update_pool);
-}
-
 static int NONNULL(1,2) rte_update_in(struct channel *c, rte *new);
-static void NONNULL(1,2) rte_update2(struct channel *c, rte *new);
+static void NONNULL(1,2) rte_update2(struct channel *c, rte *new, linpool *lp);
 
 void NONNULL(1,2)
-rte_update(struct channel *c, rte *new)
+rte_update(struct channel *c, rte *new, linpool *lp)
 {
   ASSERT(c->channel_state == CS_UP);
   ASSERT(new->net);
@@ -1803,11 +1786,11 @@ rte_update(struct channel *c, rte *new)
   if (c->in_table && !rte_update_in(c, new))
     return;
 
-  rte_update2(c, new);
+  rte_update2(c, new, lp);
 }
 
 static void NONNULL(1,2)
-rte_update2(struct channel *c, rte *new)
+rte_update2(struct channel *c, rte *new, linpool *lp)
 {
   struct proto *p = c->proto;
   struct proto_stats *stats = &c->stats;
@@ -1822,8 +1805,6 @@ rte_update2(struct channel *c, rte *new)
     stats->imp_updates_received++;
   else
     stats->imp_withdraws_received++;
-
-  rte_update_lock();
 
   if (!net_validate(new->net))
   {
@@ -1844,6 +1825,8 @@ rte_update2(struct channel *c, rte *new)
 
   if (new->attrs)
     {
+      ASSERT_DIE(lp);
+
       if (net_type_match(new->net, NB_DEST) == !new->attrs->dest)
       {
 	log(L_WARN "Ignoring route %N with invalid dest %d received via %s.%s",
@@ -1858,7 +1841,7 @@ rte_update2(struct channel *c, rte *new)
 	goto invalid;
       }
 
-      if ((filter == FILTER_REJECT) || (filter && (f_run(filter, new, rte_update_pool, 0) > F_ACCEPT)))
+      if ((filter == FILTER_REJECT) || (filter && (f_run(filter, new, lp, 0) > F_ACCEPT)))
 	{
 	  stats->imp_updates_filtered++;
 	  rte_trace_in(D_FILTERS, c, new, "filtered out");
@@ -1886,7 +1869,6 @@ rte_update2(struct channel *c, rte *new)
 	stats->imp_withdraws_ignored++;
 
       RT_UNLOCK(c->table);
-      rte_update_unlock();
       return;
     }
 
@@ -1897,7 +1879,6 @@ rte_update2(struct channel *c, rte *new)
   /* And recalculate the best route */
   rte_recalculate(c, nn, new, filtered);
   RT_UNLOCK(c->table);
-  rte_update_unlock();
   return;
 
  invalid:
@@ -1909,20 +1890,7 @@ rte_update2(struct channel *c, rte *new)
   else
     stats->imp_withdraws_invalid++;
 
-  rte_update_unlock();
   return;
-}
-
-/* Independent call to rte_announce(), used from next hop
-   recalculation, outside of rte_update(). new must be non-NULL */
-static inline void
-rte_announce_i(rtable_private *tab, net *net,
-    struct rte_storage *new, struct rte_storage *old,
-    struct rte_storage *new_best, struct rte_storage *old_best)
-{
-  rte_update_lock();
-  rte_announce(tab, net, new, old, new_best, old_best);
-  rte_update_unlock();
 }
 
 /* Modify existing route by protocol hook, used for long-lived graceful restart */
@@ -2370,7 +2338,6 @@ rt_init(void)
 {
   rta_init();
   rt_table_pool = rp_new(&root_pool, "Routing tables");
-  rte_update_pool = lp_new_default(rt_table_pool);
   init_list(&routing_tables);
 }
 
@@ -2438,10 +2405,8 @@ again:
 	      }
 
 	    /* Discard the route */
-	    rte_update_lock();
 	    rte ew = { .net = e->net->n.addr, .src = e->src, .generation = e->generation, };
 	    rte_recalculate(e->sender, e->net, &ew, 0);
-	    rte_update_unlock();
 
 	    limit--;
 
@@ -2925,9 +2890,9 @@ rt_next_hop_update_net(rtable_private *tab, net *n)
     rte_trace_in(D_ROUTES, new->sender, &nloc, best_indicator[nb][ob]);
 
     if (i)
-      rte_announce_i(tab, n, updates[i].new, updates[i].old, new, new);
+      rte_announce(tab, n, updates[i].new, updates[i].old, new, new);
     else
-      rte_announce_i(tab, n, updates[i].new, updates[i].old, new, old_best);
+      rte_announce(tab, n, updates[i].new, updates[i].old, new, old_best);
   }
 
   DBG("next_hop_update_net(%s, %N) finished\n", tab->name, n->n.addr);
@@ -3210,7 +3175,7 @@ drop_withdraw:
 }
 
 int
-rt_reload_channel(struct channel *c)
+rt_reload_channel(struct channel *c, linpool *lp)
 {
   RT_LOCK(c->in_table);
   rtable_private *tab = RT_PRIV(c->in_table);
@@ -3237,7 +3202,7 @@ rt_reload_channel(struct channel *c)
       }
 
       rte eloc = rte_copy(e);
-      rte_update2(c, &eloc);
+      rte_update2(c, &eloc, lp);
     }
 
     c->reload_next_rte = NULL;
@@ -3404,7 +3369,7 @@ drop:
 }
 
 void
-rt_refeed_channel(struct channel *c, struct bmap *seen)
+rt_refeed_channel(struct channel *c, struct bmap *seen, linpool *lp)
 {
   if (!c->out_table)
   {
@@ -3425,7 +3390,7 @@ rt_refeed_channel(struct channel *c, struct bmap *seen)
       if (seen && bmap_test(seen, r->id))
 	continue;
       rte e = rte_copy(r);
-      c->proto->rt_notify(c->proto, c, n->n.addr, &e, NULL);
+      c->proto->rt_notify(c->proto, c, lp, n->n.addr, &e, NULL);
     }
   }
   FIB_WALK_END;
@@ -3447,7 +3412,7 @@ rt_refeed_channel_net(struct channel *c, linpool *lp, const net_addr *n)
       for (struct rte_storage *r = nn->routes; r; r = r->next)
       {
 	rte e = rte_copy(r);
-	c->proto->rt_notify(c->proto, c, n, &e, NULL);
+	c->proto->rt_notify(c->proto, c, lp, n, &e, NULL);
       }
     RT_UNLOCK(c->out_table);
   }
@@ -3472,7 +3437,7 @@ rt_refeed_channel_net(struct channel *c, linpool *lp, const net_addr *n)
 }
 
 void
-rt_flush_channel(struct channel *c)
+rt_flush_channel(struct channel *c, linpool *lp)
 {
   ASSERT_DIE(c->out_table);
   ASSERT_DIE(c->ra_mode != RA_ANY);
@@ -3484,7 +3449,7 @@ rt_flush_channel(struct channel *c)
     if (!n->routes)
       continue;
 
-    c->proto->rt_notify(c->proto, c, n->n.addr, NULL, n->routes);
+    c->proto->rt_notify(c->proto, c, lp, n->n.addr, NULL, n->routes);
   }
   FIB_WALK_END;
 

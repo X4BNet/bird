@@ -133,7 +133,7 @@ rpki_table_add_roa(struct rpki_cache *cache, struct channel *channel, const net_
     .net = &pfxr->n, 
   };
 
-  rte_update(channel, &e0);
+  rte_update(channel, &e0, the_bird_linpool);
 }
 
 void

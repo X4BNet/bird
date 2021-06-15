@@ -92,7 +92,7 @@ dev_ifa_notify(struct proto *P, uint flags, struct ifa *ad)
 	.net = net,
 	.attrs = &a0,
       };
-      rte_update(c, &e0);
+      rte_update(c, &e0, the_bird_linpool);
     }
 }
 

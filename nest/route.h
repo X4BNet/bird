@@ -330,6 +330,7 @@ static inline int rte_is_filtered(const struct rte_storage *r) { return !!(r->fl
  * rte_update - enter a new update to a routing table
  * @c: channel doing the update
  * @rte: a &rte representing the new route
+ * @lp: a linpool for temporary allocations
  *
  * This function imports a new route to the appropriate table (via the channel).
  * Table keys are @rte->net and @rte->src, both obligatory.
@@ -350,11 +351,8 @@ static inline int rte_is_filtered(const struct rte_storage *r) { return !!(r->fl
  * The accepted routes are then inserted into the table, replacing the old route
  * (key is the @net together with @rte->attrs->src). Then the route is announced
  * to all the channels connected to the table using the standard export mechanism.
- *
- * All memory used for temporary allocations is taken from a special linpool
- * @rte_update_pool and freed when rte_update() finishes.
  */
-void rte_update(struct channel *c, struct rte *rte) NONNULL(1,2);
+void rte_update(struct channel *c, struct rte *rte, linpool *lp) NONNULL(1,2);
 
 /**
  * rte_withdraw - withdraw a route from a routing table
@@ -368,7 +366,7 @@ void rte_update(struct channel *c, struct rte *rte) NONNULL(1,2);
  */
 static inline void rte_withdraw(struct channel *c, const net_addr *net, struct rte_src *src)
 {
-  rte e = { .net = net, .src = src}; rte_update(c, &e);
+  rte e = { .net = net, .src = src}; rte_update(c, &e, NULL);
 }
 
 extern list routing_tables;
@@ -405,11 +403,11 @@ void rt_dump(rtable *);
 void rt_dump_all(void);
 int rt_feed_channel(struct channel *c);
 void rt_feed_channel_abort(struct channel *c);
-int rt_reload_channel(struct channel *c);
+int rt_reload_channel(struct channel *c, linpool *lp);
 void rt_reload_channel_abort(struct channel *c);
-void rt_refeed_channel(struct channel *c, struct bmap *seen);
+void rt_refeed_channel(struct channel *c, struct bmap *seen, linpool *lp);
 void rt_refeed_channel_net(struct channel *c, linpool *lp, const net_addr *n);
-void rt_flush_channel(struct channel *c);
+void rt_flush_channel(struct channel *c, linpool *lp);
 void rt_prune_sync(rtable *t, int all);
 int rte_update_out(struct channel *c, linpool *lp, rte *new, struct rte_storage *old, struct rte_storage **old_stored);
 struct rtable_config *rt_new_table(struct symbol *s, uint addr_type);

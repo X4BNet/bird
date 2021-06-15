@@ -116,7 +116,7 @@ static_announce_rte(struct static_proto *p, struct static_route *r)
   if (r->cmds)
     f_eval_rte(r->cmds, &e0, static_lp);
 
-  rte_update(p->p.main_channel, &e0);
+  rte_update(p->p.main_channel, &e0, static_lp);
   r->state = SRS_CLEAN;
 
   if (he)
