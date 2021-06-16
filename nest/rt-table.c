@@ -1326,7 +1326,8 @@ channel_export_coro(void *_c)
 	if (c->proto->feed_begin)
 	  c->proto->feed_begin(c, !c->refeeding);
 
-	lp = lp_new_default(c->proto->pool);
+	if (!lp)
+	  lp = lp_new_default(c->proto->pool);
 
 	bmap_init(&c->export_seen_map, c->proto->pool, 1024);
 
