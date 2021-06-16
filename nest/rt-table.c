@@ -1201,11 +1201,8 @@ rte_announce(rtable_private *tab, net *net, struct rte_storage *new, struct rte_
   if (!rpefn->first)
     rpefn->first = rpe;
 
-  struct rt_pending_export *rpefenull = NULL;
-  atomic_compare_exchange_strong_explicit(
-	  &tab->first_export, &rpefenull, rpe,
-	  memory_order_relaxed,
-	  memory_order_relaxed);
+  if (tab->first_export == NULL)
+    tab->first_export = rpe;
   
   /* Previous announcement pending */
   if (tab->export_scheduled)
@@ -1224,14 +1221,8 @@ rte_announce(rtable_private *tab, net *net, struct rte_storage *new, struct rte_
  */
 
 static struct rt_pending_export *
-rt_next_export(rtable *tab, struct rt_pending_export *last)
+channel_next_export_fast(struct rt_pending_export *last)
 {
-  /* To be run in both locked and unlocked context. */
-
-  /* No stored pointer, get just the first export. */
-  if (!last)
-    return atomic_load_explicit(&tab->first_export, memory_order_acquire);
-
   /* Get the whole export block and find our position in there. */
   struct rt_export_block *rpeb = PAGE_HEAD(last);
   int pos = (last - &rpeb->export[0]);
@@ -1256,16 +1247,18 @@ rt_next_export(rtable *tab, struct rt_pending_export *last)
 }
 
 static struct rt_pending_export *
-channel_next_export(struct channel *c)
+channel_next_export(struct channel *c, rtable_private *tab)
 {
+  /* As the table is locked, it is safe to reload the last export pointer */
   struct rt_pending_export *last = atomic_load_explicit(&c->last_export, memory_order_acquire);
-  struct rt_pending_export *next = rt_next_export(c->table, last);
 
-  if (PAGE_HEAD(last) != PAGE_HEAD(next))
-    /* Leaving a block, may need to cleanup the journal */
-    rt_export_used(c->table);
+  /* It is still valid, let's reuse it */
+  if (last)
+    return channel_next_export_fast(last);
 
-  return next;
+  /* No, therefore we must process the table's first pending export */
+  else
+    return tab->first_export;
 }
 
 static void
@@ -1308,6 +1301,7 @@ channel_export_coro(void *_c)
   _Bool feeding = 0;
 
   linpool *lp = NULL;
+  struct rt_pending_export *rpe = NULL;
 
   while (1)
   {
@@ -1386,15 +1380,17 @@ init_channel_feed:
 	  if (c->proto->feed_end)
 	    c->proto->feed_end(c);
 
+	  RT_LOCK(c->table);
 	  feeding = 0;
 
 	  /* We must acquire the channel's next export before we actually set ES_READY
 	   * to mitigate possible table export cleanup inbetween. */
-	  struct rt_pending_export *rpe = channel_next_export(c);
+	  rpe = channel_next_export(c, RT_PRIV(c->table));
 
 	  /* Now we're done with feeds. */
 	  atomic_store_explicit(&c->export_state, ES_READY, memory_order_release);
 	  DBG("Export coro %s.%s: switched to normal export mode\n", c->proto->name, c->name);
+	  RT_UNLOCK(c->table);
 
 	  channel_log_state_change(c);
 
@@ -1406,28 +1402,42 @@ init_channel_feed:
 	  }
 
 	  the_bird_unlock();
-
-	  /* We must not forget to process the preloaded export */
-	  if (rpe)
-	    rte_export(c, lp, rpe);
 	}
 	/* fall through */
 
       /* Regular export */
       case ES_READY:
 	{
-	  struct rt_pending_export *rpe = channel_next_export(c);
+	  /* There is no export known from previous stages, try to load */
+	  if (!rpe)
+	  {
+	    /* Next export loading may clash with table cleanup */
+	    RT_LOCK(c->table);
+	    rpe = channel_next_export(c, RT_PRIV(c->table));
+	    RT_UNLOCK(c->table);
+	  }
+
+	  /* There is no export at all */
 	  if (!rpe)
 	    break;
 
+	  /* Process the export */
 	  rte_export(c, lp, rpe);
 
 	  /* Cleaning up the old route rejection bit */
 	  if (rpe->old)
 	    bmap_clear(&c->export_reject_map, rpe->old->id);
 
+	  /* Get the next export if exists */
+	  struct rt_pending_export *rpe_next = channel_next_export_fast(rpe);
+
+	  /* The last block may be available to free */
+	  if (PAGE_HEAD(rpe_next) != PAGE_HEAD(rpe))
+	    rt_export_used(c->table);
+
 	  /* Releasing this export for cleanup routine */
 	  atomic_store_explicit(&c->last_export, rpe, memory_order_release);
+	  rpe = rpe_next;
 	  continue;
 	}
 
@@ -2546,14 +2556,13 @@ rt_export_cleanup(rtable_private *tab)
     goto done;
   }
 
-  struct rt_pending_export *new_first_export = last_export_to_free ? rt_next_export((rtable *) tab, last_export_to_free) : NULL;
-
-  struct rt_pending_export *first_export = atomic_exchange_explicit(&tab->first_export, new_first_export, memory_order_release);
+  struct rt_pending_export *first_export = tab->first_export;
+  tab->first_export = last_export_to_free ? channel_next_export_fast(last_export_to_free) : NULL;
 
   DBG("Export cleanup of %s: old first_export seq %lu, new %lu, min_seq %lu\n",
       tab->name,
       first_export ? first_export->seq : 0,
-      new_first_export ? new_first_export->seq : 0,
+      tab->first_export ? tab->first_export->seq : 0,
       min_seq);
 
   WALK_LIST2(c, n, tab->channels, table_node)

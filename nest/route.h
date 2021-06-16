@@ -156,7 +156,6 @@ typedef struct rtable_private {
   _Atomic byte nhu_state;		/* Next Hop Update state */ \
   _Atomic byte export_used;		/* Export journal cleanup scheduled */ \
   u8 internal;				/* 0 for main table, 1 for a protocol's private table */ \
-  struct rt_pending_export * _Atomic first_export;	/* First export to announce */ \
   union {				/* The table is a separate locking domain */ \
     DOMAIN(rtable) dom;			/* Domain for main table */ \
     DOMAIN(rtable_internal) idom;	/* Domain for internal table */ \
@@ -199,6 +198,7 @@ typedef struct rtable_private {
 
   list pending_exports;			/* List of packed struct rt_pending_export */
 
+  struct rt_pending_export *first_export;	/* First export to announce */
   struct fib export_fib;		/* Auxiliary fib for storing pending exports */
   u64 next_export_seq;			/* The next export will have this ID */
 } rtable_private;
