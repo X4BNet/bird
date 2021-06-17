@@ -38,4 +38,18 @@ void bsem_wait(struct bsem *);
 /* Wait for a semaphore and consume all the wakeups at once. */
 void bsem_wait_all(struct bsem *);
 
+/* There are no portable ways to make semaphores wait for a limited time.
+ * Instead, if you want to wakeup a semaphore after some short time, you should
+ * register a bsem_alarm. Attempts to register an already running alarm are
+ * ignored.
+ * */
+struct bsem_alarm {
+  struct bsem *bsem;	/* The semaphore to be woken up. */
+  _Atomic btime when;	/* When it should run. Set internally. */
+  _Atomic _Bool set;	/* Set to 1 by the alarm. */
+};
+
+void bsem_alarm(struct bsem_alarm *, btime interval);
+void bsem_alarm_init(void);
+
 #endif

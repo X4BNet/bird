@@ -37,6 +37,7 @@
 #include "lib/socket.h"
 #include "lib/event.h"
 #include "lib/locking.h"
+#include "lib/coro.h"
 #include "lib/timer.h"
 #include "lib/string.h"
 #include "nest/iface.h"

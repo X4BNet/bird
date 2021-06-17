@@ -235,3 +235,141 @@ void bsem_wait_all(struct bsem *b) {
   while (sem_trywait(&b->sem) == 0)
     ;
 }
+
+static int bsem_alarm_pipe[2];
+static struct timeloop bsem_alarm_timeloop;
+
+static int bsem_alarm_cmp(const void *_a, const void *_b)
+{
+  struct bsem_alarm *a = (void *) _a, *b = (void *) _b;
+  btime wa = atomic_load_explicit(&a->when, memory_order_acquire);
+  btime wb = atomic_load_explicit(&b->when, memory_order_acquire);
+
+  return wb - wa;
+}
+
+static void bsem_alarm_coro(void * data UNUSED)
+{
+  uint max = 64;
+  uint count = 0;
+  struct bsem_alarm **ba = xmalloc(sizeof(struct bsem_alarm *) * max);
+
+  pthread_setspecific(current_time_key, &bsem_alarm_timeloop);
+
+  while (1)
+  {
+    /* Ring the alarms */
+    int timeout = -1;
+    uint count_before = count;
+
+    times_update(&bsem_alarm_timeloop);
+
+    DBG("Alarms max=%u count=%u\n", max, count);
+
+    while (count)
+    {
+      btime when = atomic_load_explicit(&ba[count-1]->when, memory_order_acquire);
+      btime now = current_time();
+      if (when - now < 1 MS)
+      {
+	count--;
+	DBG("when=%t now=%t posting bsem %p\n", when, now, ba[count]->bsem);
+	atomic_store_explicit(&ba[count]->when, 0, memory_order_release);
+	atomic_store_explicit(&ba[count]->set, 1, memory_order_release);
+	bsem_post(ba[count]->bsem);
+      }
+      else
+      {
+	timeout = (when - now) TO_MS;
+	DBG("when=%t now=%t timeout=%d\n", when, now, timeout);
+	break;
+      }
+    }
+
+    DBG("Processed %u fast alarms, timeout %d now", count_before - count, timeout);
+
+    struct pollfd pfd = {
+      .fd = bsem_alarm_pipe[0],
+      .events = POLLIN,
+    };
+
+    int e = poll(&pfd, 1, timeout);
+
+    if ((!e) || (e < 0) && ((errno == EAGAIN) || (errno == EINTR)))
+      continue;
+
+    if (e < 0)
+    {
+      log(L_ERR "Error polling the internal alarm pipe: %m");
+      continue;
+    }
+
+    count_before = count;
+
+    while (1)
+    {
+      if (count >= max)
+	xrealloc(ba, sizeof(struct bsem_alarm *) * (max *= 2));
+
+      e = read(bsem_alarm_pipe[0], &ba[count], sizeof(struct bsem_alarm *));
+      if ((e < 0) && ((errno == EAGAIN) || (errno == EINTR)))
+	break;
+
+      if (e < 0)
+      {
+	log(L_ERR "Error reading from internal alarm pipe: %m");
+	break;
+      }
+
+      ASSERT_DIE(e == sizeof(struct bsem_alarm *));
+      count++;
+    }
+
+    DBG("Received %u fast alarms", count - count_before);
+
+    qsort(ba, count, sizeof(struct bsem_alarm *), bsem_alarm_cmp);
+  }
+}
+
+void bsem_alarm_init(void)
+{
+  times_init(&bsem_alarm_timeloop);
+
+  if (pipe(bsem_alarm_pipe) < 0)
+    die("pipe(&bsem_alarm_pipe) failed: %m");
+
+  if (fcntl(bsem_alarm_pipe[0], F_SETFL, O_NONBLOCK) < 0)
+    die("fcntl(O_NONBLOCK) on bsem_alarm_pipe[0] failed: %m");
+
+  /* Purposedly not setting the write end nonblocking */
+
+  coro_run(&root_pool, bsem_alarm_coro, NULL);
+}
+
+void bsem_alarm(struct bsem_alarm *a, btime interval)
+{
+  if (atomic_load_explicit(&a->when, memory_order_acquire))
+    return;
+
+  btime when = current_time() + interval;
+
+  atomic_store_explicit(&a->set, 0, memory_order_release);
+  atomic_store_explicit(&a->when, when, memory_order_release);
+
+  while (1)
+  {
+    int e = write(bsem_alarm_pipe[1], &a, sizeof(struct bsem_alarm *));
+    if ((e < 0) && ((errno == EINTR) || (errno == EAGAIN)))
+      continue;
+
+    if (e < 0)
+    {
+      log(L_ERR "Error writing to internal alarm pipe: %m");
+      continue;
+    }
+
+    ASSERT_DIE(e == sizeof(struct bsem_alarm *));
+    DBG("Sent a fast alarm with interval %t (when=%t)", interval, when);
+    return;
+  }
+}

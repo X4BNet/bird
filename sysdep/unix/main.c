@@ -920,6 +920,8 @@ main(int argc, char **argv)
       dup2(0, 2);
     }
 
+  bsem_alarm_init();
+
   the_bird_lock();
 
   main_thread_init();
