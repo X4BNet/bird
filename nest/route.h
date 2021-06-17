@@ -14,6 +14,7 @@
 #include "lib/resource.h"
 #include "lib/net.h"
 #include "lib/locking.h"
+#include "lib/coro.h"
 
 #include <stdatomic.h>
 
@@ -188,7 +189,8 @@ typedef struct rtable_private {
   linpool *maint_lp;			/* Maintenance linpool */
   byte prune_state;			/* Table prune state, 1 -> scheduled, 2-> running */
   byte hcu_scheduled;			/* Hostcache update is scheduled */
-  byte export_scheduled;		/* Export is scheduled */
+
+  struct bsem_alarm export_alarm;	/* Export notifier */
 
   struct fib_iterator prune_fit;	/* Rtable prune FIB iterator */
   struct fib_iterator nhu_fit;		/* Next Hop Update FIB iterator */
@@ -227,6 +229,7 @@ struct rtable_config {
   byte internal;			/* Internal table of a protocol */
   btime min_settle_time;		/* Minimum settle time for notifications */
   btime max_settle_time;		/* Maximum settle time for notifications */
+  btime export_settle_time;		/* Delay before exports are announced */
 };
 
 struct rt_subscription {

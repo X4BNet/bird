@@ -191,6 +191,8 @@ table_sorted:
 table_item:
    MIN SETTLE TIME time { this_table->min_settle_time = $4; }
  | MAX SETTLE TIME time { this_table->max_settle_time = $4; }
+ | EXPORT SETTLE TIME time { this_table->export_settle_time = $4; }
+ ;
 
 table_opts:
    /* EMPTY */

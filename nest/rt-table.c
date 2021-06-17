@@ -1203,14 +1203,8 @@ rte_announce(rtable_private *tab, net *net, struct rte_storage *new, struct rte_
 
   if (tab->first_export == NULL)
     tab->first_export = rpe;
-  
-  /* Previous announcement pending */
-  if (tab->export_scheduled)
-    return;
 
-  /* Do the announcement */
-  tab->export_scheduled = 1;
-  bsem_post(tab->maint_sem);
+  bsem_alarm(&tab->export_alarm, tab->config->export_settle_time);
 }
 
 /*
@@ -1272,8 +1266,6 @@ rt_announce_exports(rtable_private *tab)
 
     bsem_post(c->export_sem);
   }
-
-  tab->export_scheduled = 0;
 }
 
 static struct rt_pending_export *
@@ -2115,13 +2107,18 @@ rt_maint(void *ptr)
 
     RT_LOCK(tab);
 
+    DBG("rt_maint for %s woken up at %p\n", tab->name, tab->maint_sem);
+
     if (tab->maint_lp)
       lp_flush(tab->maint_lp);
     else
       tab->maint_lp = lp_new_default(tab->rp);
 
-    if (tab->export_scheduled)
+    if (atomic_load_explicit(&tab->export_alarm.set, memory_order_acquire))
+    {
+      atomic_store_explicit(&tab->export_alarm.set, 0, memory_order_release);
       rt_announce_exports(tab);
+    }
 
     if (atomic_load_explicit(&tab->export_used, memory_order_acquire))
       if (rt_export_cleanup(tab))
@@ -2332,6 +2329,8 @@ rt_setup(pool *pp, struct rtable_config *cf)
     init_list(&t->subscribers);
 
     t->maint_sem = bsem_new(p);
+    DBG("maint_sem for %s = %p\n", t->name, t->maint_sem);
+    t->export_alarm = (struct bsem_alarm) { .bsem = t->maint_sem };
     t->maint_coro = coro_run(p, rt_maint, t);
   }
 
@@ -2670,6 +2669,7 @@ rt_preconfig(struct config *c)
   c->def_table_attrs = cfg_allocz(sizeof(struct rtable_config));
   c->def_table_attrs->min_settle_time = 1 S;
   c->def_table_attrs->max_settle_time = 20 S;
+  c->def_table_attrs->export_settle_time = 10 MS;
 
   rt_new_table(cf_get_symbol("master4"), NET_IP4);
   rt_new_table(cf_get_symbol("master6"), NET_IP6);
@@ -2970,6 +2970,7 @@ rt_new_table(struct symbol *s, uint addr_type)
   c->gc_min_time = 5;
   c->min_settle_time = new_config->def_table_attrs->min_settle_time;
   c->max_settle_time = new_config->def_table_attrs->max_settle_time;
+  c->export_settle_time = new_config->def_table_attrs->export_settle_time;
 
   add_tail(&new_config->tables, &c->n);
 
