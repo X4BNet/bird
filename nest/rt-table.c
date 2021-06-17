@@ -2667,6 +2667,10 @@ rt_preconfig(struct config *c)
 {
   init_list(&c->tables);
 
+  c->def_table_attrs = cfg_allocz(sizeof(struct rtable_config));
+  c->def_table_attrs->min_settle_time = 1 S;
+  c->def_table_attrs->max_settle_time = 20 S;
+
   rt_new_table(cf_get_symbol("master4"), NET_IP4);
   rt_new_table(cf_get_symbol("master6"), NET_IP6);
 }
@@ -2964,8 +2968,8 @@ rt_new_table(struct symbol *s, uint addr_type)
   c->addr_type = addr_type;
   c->gc_max_ops = 1000;
   c->gc_min_time = 5;
-  c->min_settle_time = 1 S;
-  c->max_settle_time = 20 S;
+  c->min_settle_time = new_config->def_table_attrs->min_settle_time;
+  c->max_settle_time = new_config->def_table_attrs->max_settle_time;
 
   add_tail(&new_config->tables, &c->n);
 
@@ -3050,6 +3054,11 @@ rt_commit(struct config *new, struct config *old)
 		  ot->config = r;
 		  if (o->sorted != r->sorted)
 		    log(L_WARN "Reconfiguration of rtable sorted flag not implemented");
+		  if (o->max_settle_time < r->max_settle_time)
+		  {
+		    tm_stop(ot->settle_timer);
+		    rt_kick_settle_timer(ot);
+		  }
 		}
 	      else
 		{

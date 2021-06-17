@@ -30,6 +30,7 @@ struct config {
   const char *syslog_name;		/* Name used for syslog (NULL -> no syslog) */
   struct rtable_config *def_tables[NET_MAX]; /* Default routing tables for each network */
   struct iface_patt *router_id_from;	/* Configured list of router ID iface patterns */
+  struct rtable_config *def_table_attrs;/* Default table attributes */
 
   u32 router_id;			/* Our Router ID */
   u32 proto_default_debug;		/* Default protocol debug mask */

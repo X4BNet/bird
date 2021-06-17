@@ -17,6 +17,7 @@ CF_HDR
 
 CF_DEFINES
 
+static struct rtable_config *this_table;
 static struct proto_config *this_proto;
 static struct channel_config *this_channel;
 static struct iface_patt *this_ipatt;
@@ -94,7 +95,7 @@ CF_KEYWORDS(RECEIVE, LIMIT, ACTION, WARN, BLOCK, RESTART, DISABLE, KEEP, FILTERE
 CF_KEYWORDS(PASSWORD, FROM, PASSIVE, TO, ID, EVENTS, PACKETS, PROTOCOLS, CHANNELS, INTERFACES)
 CF_KEYWORDS(ALGORITHM, KEYED, HMAC, MD5, SHA1, SHA256, SHA384, SHA512)
 CF_KEYWORDS(PRIMARY, STATS, COUNT, BY, FOR, COMMANDS, PREEXPORT, NOEXPORT, EXPORTED, GENERATE)
-CF_KEYWORDS(BGP, PASSWORDS, DESCRIPTION, SORTED)
+CF_KEYWORDS(BGP, PASSWORDS, DESCRIPTION, SORTED, SETTLE, TIME, MIN, MAX)
 CF_KEYWORDS(RELOAD, IN, OUT, MRTDUMP, MESSAGES, RESTRICT, MEMORY, IGP_METRIC, CLASS, DSCP)
 CF_KEYWORDS(TIMEFORMAT, ISO, SHORT, LONG, ROUTE, PROTOCOL, BASE, LOG, S, MS, US)
 CF_KEYWORDS(GRACEFUL, RESTART, WAIT, MAX, FLUSH, AS)
@@ -187,12 +188,38 @@ table_sorted:
  | SORTED { $$ = 1; }
  ;
 
+table_item:
+   MIN SETTLE TIME time { this_table->min_settle_time = $4; }
+ | MAX SETTLE TIME time { this_table->max_settle_time = $4; }
+
+table_opts:
+   /* EMPTY */
+ | table_opts table_item ';'
+ ;
+
+table_opt_list:
+   /* EMPTY */
+ | '{' table_opts '}'
+ ;
+
 table: net_type TABLE symbol table_sorted {
    struct rtable_config *cf;
    cf = rt_new_table($3, $1);
    cf->sorted = $4;
-   }
+   this_table = cf;
+  }
+  table_opt_list
+  {
+   if (this_table->min_settle_time > this_table->max_settle_time)
+     cf_error("Impossible settings of MIN/MAX SETTLE TIME, MIN must be lower than MAX");
+  }
  ;
+
+/* Setting default table attributes */
+
+conf: default_table_item ;
+
+default_table_item: DEFAULT TABLE { this_table = new_config->def_table_attrs; } table_item ;
 
 
 /* Definition of protocols */
