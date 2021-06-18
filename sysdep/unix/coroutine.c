@@ -146,7 +146,6 @@ static struct resclass coro_class = {
 };
 
 _Thread_local struct coroutine *this_coro = NULL;
-extern pthread_key_t current_time_key;
 
 static void *coro_entry(void *p)
 {
@@ -155,7 +154,7 @@ static void *coro_entry(void *p)
 
   this_coro = c;
 
-  pthread_setspecific(current_time_key, &main_timeloop);
+  local_timeloop = &main_timeloop;
 
   c->entry(c->data);
   ASSERT_DIE(coro_cleaned_up);
@@ -254,7 +253,7 @@ static void bsem_alarm_coro(void * data UNUSED)
   uint count = 0;
   struct bsem_alarm **ba = xmalloc(sizeof(struct bsem_alarm *) * max);
 
-  pthread_setspecific(current_time_key, &bsem_alarm_timeloop);
+  local_timeloop = &bsem_alarm_timeloop;
 
   while (1)
   {
