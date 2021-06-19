@@ -1021,9 +1021,16 @@ bfd_start(struct proto *P)
   struct bfd_proto *p = (struct bfd_proto *) P;
   struct bfd_config *cf = (struct bfd_config *) (P->cf);
 
-  p->loop = birdloop_new();
-  p->tpool = rp_new(NULL, "BFD thread root");
+  p->domain = DOMAIN_NEW(bfd_io, "BFD");
+  LOCK_DOMAIN(bfd_io, p->domain);
+
   pthread_spin_init(&p->lock, PTHREAD_PROCESS_PRIVATE);
+
+  p->tpool = rp_new(P->pool, "BFD loop pool");
+  p->loop = birdloop_new(P->pool, p->domain.bfd_io);
+  p->p.active_coroutines++;
+
+  birdloop_enter_locked(p->loop);
 
   p->session_slab = sl_new(P->pool, sizeof(struct bfd_session));
   HASH_INIT(p->session_hash_id, P->pool, 8);
@@ -1035,8 +1042,6 @@ bfd_start(struct proto *P)
   bfd_notify_init(p);
 
   add_tail(&bfd_proto_list, &p->bfd_node);
-
-  birdloop_enter(p->loop);
 
   if (cf->accept_ipv4 && cf->accept_direct)
     p->rx4_1 = bfd_open_rx_sk(p, 0, SK_IPV4);
@@ -1058,21 +1063,38 @@ bfd_start(struct proto *P)
   WALK_LIST(n, cf->neigh_list)
     bfd_start_neighbor(p, n);
 
-  birdloop_start(p->loop);
-
   return PS_UP;
 }
 
+static void
+bfd_loop_stopped(void *_p)
+{
+  birdloop_enter(&main_birdloop);
+
+  struct bfd_proto *p = _p;
+
+  birdloop_enter(p->loop);
+  rfree(p->tpool);
+  birdloop_leave(p->loop);
+
+  birdloop_free(p->loop);
+  p->loop = NULL;
+
+  p->p.active_coroutines--;
+  proto_check_stopped(&p->p);
+
+  birdloop_leave(&main_birdloop);
+}
 
 static void
 bfd_shutdown(struct proto *P)
 {
   struct bfd_proto *p = (struct bfd_proto *) P;
-  struct bfd_config *cf = (struct bfd_config *) (P->cf);
+  struct bfd_config *cf = (struct bfd_config *) (p->p.cf);
+
+  birdloop_enter(p->loop);
 
   rem_node(&p->bfd_node);
-
-  birdloop_stop(p->loop);
 
   struct bfd_neighbor *n;
   WALK_LIST(n, cf->neigh_list)
@@ -1080,12 +1102,9 @@ bfd_shutdown(struct proto *P)
 
   bfd_drop_requests(p);
 
-  /* FIXME: This is hack */
-  birdloop_enter(p->loop);
-  rfree(p->tpool);
   birdloop_leave(p->loop);
 
-  birdloop_free(p->loop);
+  birdloop_stop(p->loop, bfd_loop_stopped, p);
 }
 
 static int

@@ -44,6 +44,7 @@
 #include "conf/conf.h"
 
 #include "sysdep/unix/unix.h"
+#include "sysdep/unix/io-loop.h"
 #include CONFIG_INCLUDE_SYSIO_H
 
 /* Maximum number of calls of tx handler for one socket in one
@@ -127,6 +128,8 @@ btime boot_time;
 void
 times_init(struct timeloop *loop)
 {
+  TLOCK_LOCAL_ASSERT(loop);
+
   struct timespec ts;
   int rv;
 
@@ -144,6 +147,8 @@ times_init(struct timeloop *loop)
 void
 times_update(struct timeloop *loop)
 {
+  TLOCK_LOCAL_ASSERT(loop);
+
   struct timespec ts;
   int rv;
 
@@ -163,6 +168,8 @@ times_update(struct timeloop *loop)
 void
 times_update_real_time(struct timeloop *loop)
 {
+  TLOCK_LOCAL_ASSERT(loop);
+
   struct timespec ts;
   int rv;
 
@@ -806,18 +813,15 @@ sk_free(resource *r)
     sk_ssh_free(s);
 #endif
 
-  if (s->fd < 0)
+  if ((s->fd < 0) || (s->flags & SKF_THREAD))
     return;
 
-  /* FIXME: we should call sk_stop() for SKF_THREAD sockets */
-  if (!(s->flags & SKF_THREAD))
-  {
-    if (s == current_sock)
-      current_sock = sk_next(s);
-    if (s == stored_sock)
-      stored_sock = sk_next(s);
-    rem_node(&s->n);
-  }
+  if (s == current_sock)
+    current_sock = sk_next(s);
+  if (s == stored_sock)
+    stored_sock = sk_next(s);
+
+  rem_node(&s->n);
 
   if (s->type != SK_SSH && s->type != SK_SSH_ACTIVE)
     close(s->fd);
@@ -2177,14 +2181,7 @@ static int short_loops = 0;
 #define SHORT_LOOP_MAX 10
 #define WORK_EVENTS_MAX 10
 
-static int poll_reload_pipe[2];
-
-void
-io_loop_reload(void)
-{
-  char b = 0;
-  write(poll_reload_pipe[1], &b, 1);
-}
+void pipe_drain(int fd);
 
 void
 io_loop(void)
@@ -2197,29 +2194,26 @@ io_loop(void)
   int fdmax = 256;
   struct pollfd *pfd = xmalloc(fdmax * sizeof(struct pollfd));
 
-  if (pipe(poll_reload_pipe) < 0)
-    die("pipe(poll_reload_pipe) failed: %m");
-
   watchdog_start1();
   for(;;)
     {
-      times_update(&main_timeloop);
+      times_update(&main_birdloop.time);
       events = ev_run_list(&global_event_list);
       events = ev_run_list_limited(&global_work_list, WORK_EVENTS_MAX) || events;
-      timers_fire(&main_timeloop);
+      timers_fire(&main_birdloop.time);
       io_close_event();
 
       // FIXME
       poll_tout = (events ? 0 : 3000); /* Time in milliseconds */
-      if (t = timers_first(&main_timeloop))
+      if (t = timers_first(&main_birdloop.time))
       {
-	times_update(&main_timeloop);
+	times_update(&main_birdloop.time);
 	timeout = (tm_remains(t) TO_MS) + 1;
 	poll_tout = MIN(poll_tout, timeout);
       }
 
       /* A hack to reload main io_loop() when something has changed asynchronously. */
-      pfd[0].fd = poll_reload_pipe[0];
+      pfd[0].fd = main_birdloop.wakeup_fds[0];
       pfd[0].events = POLLIN;
 
       nfds = 1;
@@ -2301,12 +2295,11 @@ io_loop(void)
 	  if (pfd[0].revents & POLLIN)
 	  {
 	    /* IO loop reload requested */
-	    char b;
-	    read(poll_reload_pipe[0], &b, 1);
+	    pipe_drain(main_birdloop.wakeup_fds[0]);
 	    continue;
 	  }
 
-	  times_update(&main_timeloop);
+	  times_update(&main_birdloop.time);
 
 	  /* guaranteed to be non-empty */
 	  current_sock = SKIP_BACK(sock, n, HEAD(sock_list));

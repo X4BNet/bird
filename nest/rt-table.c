@@ -517,12 +517,12 @@ do_rt_notify(struct channel *c, linpool *lp, const net_addr *n, rte *new, struct
   struct proto *p = c->proto;
   struct proto_stats *stats = &c->stats;
 
-  the_bird_lock();
+  birdloop_enter(&main_birdloop);
 
   if (c->export_state > ES_READY)
   {
     /* Situation has suddenly changed. No more exporting! */
-    the_bird_unlock();
+    birdloop_leave(&main_birdloop);
     return;
   }
 
@@ -601,7 +601,7 @@ do_rt_notify(struct channel *c, linpool *lp, const net_addr *n, rte *new, struct
     RT_UNLOCK(c->out_table);
   }
 
-  the_bird_unlock();
+  birdloop_leave(&main_birdloop);
 }
 
 static void
@@ -1305,10 +1305,10 @@ channel_export_coro(void *_c)
     {
       /* Feed initialization */
       case ES_HUNGRY:
-	the_bird_lock();
+	birdloop_enter(&main_birdloop);
 	if (atomic_load_explicit(&c->export_state, memory_order_acquire) != ES_HUNGRY)
 	{
-	  the_bird_unlock();
+	  birdloop_leave(&main_birdloop);
 	  continue;
 	}
 
@@ -1334,8 +1334,8 @@ init_channel_feed:
 
 	RT_UNLOCK(c->table);
 
-	io_loop_reload();
-	the_bird_unlock();
+	birdloop_ping(&main_birdloop);
+	birdloop_leave(&main_birdloop);
 	/* fall through */
 
       /* Regular feeding */
@@ -1346,10 +1346,10 @@ init_channel_feed:
 
 	  DBG("Export coro %s.%s: feeding done\n", c->proto->name, c->name);
 
-	  the_bird_lock();
+	  birdloop_enter(&main_birdloop);
 	  if (atomic_load_explicit(&c->export_state, memory_order_acquire) != ES_FEEDING)
 	  {
-	    the_bird_unlock();
+	    birdloop_leave(&main_birdloop);
 	    continue;
 	  }
 
@@ -1390,11 +1390,11 @@ init_channel_feed:
 	  if (c->refeed_pending)
 	  {
 	    channel_request_feeding(c);
-	    the_bird_unlock();
+	    birdloop_leave(&main_birdloop);
 	    break;
 	  }
 
-	  the_bird_unlock();
+	  birdloop_leave(&main_birdloop);
 	}
 	/* fall through */
 
@@ -1440,10 +1440,10 @@ init_channel_feed:
 	DBG("Export coro %s.%s: %s requested\n", c->proto->name, c->name,
 	    (es == ES_STOP) ? "stop" : "restart");
 
-	the_bird_lock();
+	birdloop_enter(&main_birdloop);
 	if (atomic_load_explicit(&c->export_state, memory_order_acquire) != es)
 	{
-	  the_bird_unlock();
+	  birdloop_leave(&main_birdloop);
 	  continue;
 	}
 
@@ -1471,8 +1471,8 @@ init_channel_feed:
 	DBG("Export coroutine of %s.%s finished", c->proto->name, c->name);
 
 	/* Finishing */
-	io_loop_reload();
-	the_bird_unlock();
+	birdloop_ping(&main_birdloop);
+	birdloop_leave(&main_birdloop);
 
 	return;
 
@@ -2483,7 +2483,7 @@ rt_finish_prune(rtable *tab)
 {
   DBG("rt_finish_prune(%s)\n", tab->name);
 
-  the_bird_lock();
+  birdloop_enter(&main_birdloop);
 
   /* Get channels flushed also from exports */
   RT_LOCK(tab);
@@ -2513,7 +2513,7 @@ rt_finish_prune(rtable *tab)
   /* FIXME: This should be handled in a better way */
   rt_prune_sources();
 
-  the_bird_unlock();
+  birdloop_leave(&main_birdloop);
 
   return;
 }

@@ -296,10 +296,14 @@ main(int argc, char *argv[])
 {
   bt_init(argc, argv);
 
+  the_bird_lock();
+
   bt_test_suite(t_balancing, "Balancing strong unbalanced trees");
   bt_test_suite(t_balancing_random, "Balancing random unbalanced trees");
   bt_test_suite(t_find, "Finding values in trees");
   bt_test_suite(t_find_ranges, "Finding values in trees with random ranged values");
+
+  the_bird_unlock();
 
   return bt_exit_value();
 }

@@ -173,6 +173,7 @@ struct proto {
   u32 debug;				/* Debugging flags */
   u32 mrtdump;				/* MRTDump flags */
   uint active_channels;			/* Number of active channels */
+  uint active_coroutines;		/* Number of active coroutines */
   _Atomic uint src_count;		/* Number of allocated route sources */
   byte net_type;			/* Protocol network type (NET_*), 0 for undefined */
   byte disabled;			/* Manually disabled */
@@ -381,6 +382,17 @@ void proto_notify_state(struct proto *p, unsigned state);
  *	as a result of received ROUTE-REFRESH request).
  */
 
+static inline int proto_is_inactive(struct proto *p)
+{ return (p->active_channels == 0) && (p->active_coroutines == 0); }
+
+static inline int proto_is_stopped(struct proto *p)
+{ return (p->proto_state == PS_STOP) && proto_is_inactive(p); }
+
+static inline void proto_check_stopped(struct proto *p)
+{
+  if (proto_is_stopped(p))
+    proto_notify_state(p, PS_DOWN);
+}
 
 
 /*

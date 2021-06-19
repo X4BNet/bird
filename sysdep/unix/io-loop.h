@@ -4,31 +4,32 @@
  *	Can be freely distributed and used under the terms of the GNU GPL.
  */
 
-#ifndef _BIRD_IO_LOOP_H_
-#define _BIRD_IO_LOOP_H_
+#ifndef _BIRD_SYSDEP_UNIX_IO_LOOP_H_
+#define _BIRD_SYSDEP_UNIX_IO_LOOP_H_
 
-#include "nest/bird.h"
-#include "lib/lists.h"
-#include "lib/resource.h"
-#include "lib/event.h"
-#include "lib/timer.h"
-#include "lib/socket.h"
+struct birdloop
+{
+  pool *pool;
 
+  u8 wakeup_masked;
+  u8 ping_sent;
+  int wakeup_fds[2];
 
-void ev2_schedule(event *e);
+  struct timeloop time;
+  list event_list;
+  list sock_list;
+  uint sock_num;
 
-void sk_start(sock *s);
-void sk_stop(sock *s);
+  BUFFER(sock *) poll_sk;
+  BUFFER(struct pollfd) poll_fd;
+  u8 poll_changed;
+  u8 close_scheduled;
 
-struct birdloop *birdloop_new(void);
-void birdloop_start(struct birdloop *loop);
-void birdloop_stop(struct birdloop *loop);
-void birdloop_free(struct birdloop *loop);
+  void (*stopped)(void *data);
+  void *stop_data;
 
-void birdloop_enter(struct birdloop *loop);
-void birdloop_leave(struct birdloop *loop);
-void birdloop_mask_wakeups(struct birdloop *loop);
-void birdloop_unmask_wakeups(struct birdloop *loop);
+  struct birdloop *prev_loop;
+  struct timeloop *prev_time;
+};
 
-
-#endif /* _BIRD_IO_LOOP_H_ */
+#endif

@@ -14,6 +14,7 @@ struct domain_generic;
 /* Here define the global lock order; first to last. */
 struct lock_order {
   struct domain_generic *the_bird;
+  struct domain_generic *bfd_io;
   struct domain_generic *rtable_internal;
   struct domain_generic *rtable;
   struct domain_generic *rt_attr;
@@ -36,9 +37,18 @@ void domain_free(struct domain_generic *);
 #define LOCK_DOMAIN(type, d)	do_lock(((d).type), &(locking_stack.type))
 #define UNLOCK_DOMAIN(type, d)  do_unlock(((d).type), &(locking_stack.type))
 
+#define DOMAIN_IS_LOCKED(type, d) (((d).type) == (locking_stack.type))
+#define DG_IS_LOCKED(d)	((d) == *(DG_LSP(d)))
+
 /* Internal for locking */
 void do_lock(struct domain_generic *dg, struct domain_generic **lsp);
 void do_unlock(struct domain_generic *dg, struct domain_generic **lsp);
+
+uint dg_order(struct domain_generic *dg);
+
+#define DG_LSP(d)	((struct domain_generic **) (((void *) &locking_stack) + dg_order(d)))
+#define DG_LOCK(d)	do_lock(d, DG_LSP(d))
+#define DG_UNLOCK(d)	do_unlock(d, DG_LSP(d))
 
 /* Use with care. To be removed in near future. */
 DEFINE_DOMAIN(the_bird);
@@ -46,8 +56,8 @@ extern DOMAIN(the_bird) the_bird_domain;
 
 #define the_bird_lock()		LOCK_DOMAIN(the_bird, the_bird_domain)
 #define the_bird_unlock()	UNLOCK_DOMAIN(the_bird, the_bird_domain)
+#define the_bird_locked()	DOMAIN_IS_LOCKED(the_bird, the_bird_domain)
 
-_Bool the_bird_locked(void);
 #define ASSERT_THE_BIRD_LOCKED	({ if (!the_bird_locked()) bug("The BIRD lock must be locked here: %s:%d", __FILE__, __LINE__); })
 
 #endif

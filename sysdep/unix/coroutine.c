@@ -79,6 +79,11 @@ domain_free(struct domain_generic *dg)
   xfree(dg);
 }
 
+uint dg_order(struct domain_generic *dg)
+{
+  return dg->order;
+}
+
 void do_lock(struct domain_generic *dg, struct domain_generic **lsp)
 {
   if ((char *) lsp - (char *) &locking_stack != dg->order)
@@ -115,11 +120,6 @@ void do_unlock(struct domain_generic *dg, struct domain_generic **lsp)
   pthread_mutex_unlock(&dg->mutex);
 }
 
-_Bool the_bird_locked(void)
-{
-  return locking_stack.the_bird == &the_bird_domain_gen;
-}
-
 /* Coroutines */
 struct coroutine {
   resource r;
@@ -150,11 +150,14 @@ _Thread_local struct coroutine *this_coro = NULL;
 static void *coro_entry(void *p)
 {
   struct coroutine *c = p;
+  struct timeloop tloc = {};
+
+  times_init(&tloc);
+  local_timeloop = &tloc;
+
   ASSERT_DIE(c->entry);
 
   this_coro = c;
-
-  local_timeloop = &main_timeloop;
 
   c->entry(c->data);
   ASSERT_DIE(coro_cleaned_up);

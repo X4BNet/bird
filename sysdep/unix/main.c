@@ -868,9 +868,11 @@ main(int argc, char **argv)
   parse_args(argc, argv);
   log_switch(1, NULL, NULL);
 
+  the_bird_lock();
+
   net_init();
   resource_init();
-  timer_init();
+  birdloop_init();
   olock_init();
   io_init();
   rt_init();
@@ -921,8 +923,6 @@ main(int argc, char **argv)
     }
 
   bsem_alarm_init();
-
-  the_bird_lock();
 
   main_thread_init();
 

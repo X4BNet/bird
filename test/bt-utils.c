@@ -63,7 +63,7 @@ bt_bird_init(void)
   net_init();
   resource_init();
   olock_init();
-  timer_init();
+  birdloop_init();
   io_init();
   rt_init();
   if_init();
@@ -159,6 +159,8 @@ bt_config_parse__(struct config *cfg)
     bt_show_cfg_error(cfg);
     return NULL;
   }
+
+  bsem_alarm_init();
 
   config_commit(cfg, RECONFIG_HARD, 0);
   new_config = cfg;

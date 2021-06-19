@@ -72,11 +72,11 @@ int
 main(int argc, char *argv[])
 {
   bt_init(argc, argv);
+
+  the_bird_lock();
   bt_bird_init();
 
   bt_assert_hook = bt_assert_filter;
-
-  the_bird_lock();
 
   /* Initial test.conf parsing, must be done here */
   if (!bt_config_file_parse(BT_CONFIG_FILE))

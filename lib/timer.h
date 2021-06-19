@@ -12,6 +12,8 @@
 
 #include "nest/bird.h"
 #include "lib/buffer.h"
+#include "lib/io-loop.h"
+#include "lib/locking.h"
 #include "lib/resource.h"
 
 
@@ -25,21 +27,29 @@ typedef struct timer
   uint randomize;			/* Amount of randomization */
   uint recurrent;			/* Timer recurrence */
 
+  struct timeloop *loop;		/* Loop where the timer is active */
+
   int index;
 } timer;
 
 struct timeloop
 {
   BUFFER_(timer *) timers;
+  struct domain_generic *domain;
+  struct birdloop *loop;
+  struct coroutine *coro;
   btime last_time;
   btime real_time;
 };
 
+#define TLOCK_TIMER_ASSERT(loop) ASSERT_DIE((loop)->domain && DG_IS_LOCKED((loop)->domain))
+#define TLOCK_LOCAL_ASSERT(loop) ASSERT_DIE(!(loop)->domain || DG_IS_LOCKED((loop)->domain))
+
 static inline uint timers_count(struct timeloop *loop)
-{ return loop->timers.used - 1; }
+{ TLOCK_TIMER_ASSERT(loop); return loop->timers.used - 1; }
 
 static inline timer *timers_first(struct timeloop *loop)
-{ return (loop->timers.used > 1) ? loop->timers.data[1] : NULL; }
+{ TLOCK_TIMER_ASSERT(loop); return (loop->timers.used > 1) ? loop->timers.data[1] : NULL; }
 
 extern struct timeloop main_timeloop;
 extern _Thread_local struct timeloop *local_timeloop;
@@ -102,8 +112,6 @@ void times_update_real_time(struct timeloop *loop);
 /* For I/O loop */
 void timers_init(struct timeloop *loop, pool *p);
 void timers_fire(struct timeloop *loop);
-
-void timer_init(void);
 
 
 struct timeformat {

@@ -55,7 +55,7 @@ t_ev_run_list(void)
 
   resource_init();
   olock_init();
-  timer_init();
+  birdloop_init();
   io_init();
   rt_init();
   if_init();

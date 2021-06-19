@@ -22,6 +22,9 @@ struct coroutine;
  */
 struct coroutine *coro_run(pool *, void (*entry)(void *), void *data);
 
+/* Get self. */
+extern _Thread_local struct coroutine *this_coro;
+
 /* Semaphores are handy to sleep and wake worker threads. */
 struct bsem;
 

@@ -56,11 +56,8 @@ static char *proto_state_name(struct proto *p);
 static void channel_verify_limits(struct channel *c);
 static inline void channel_reset_limit(struct channel_limit *l);
 
-static inline int proto_is_stopped(struct proto *p)
-{ return (p->proto_state == PS_STOP) && (p->active_channels == 0); }
-
 static inline int proto_is_done(struct proto *p)
-{ return (p->proto_state == PS_DOWN) && (p->active_channels == 0)
+{ return (p->proto_state == PS_DOWN) && proto_is_inactive(p)
   && (atomic_load_explicit(&p->src_count, memory_order_acquire) == 0); }
 
 static inline int channel_is_active(struct channel *c)
@@ -633,8 +630,7 @@ channel_do_down(struct channel *c)
 
   CALL(c->channel->cleanup, c);
 
-  if (proto_is_stopped(c->proto))
-    proto_notify_state(c->proto, PS_DOWN);
+  proto_check_stopped(c->proto);
 }
 
 void
@@ -986,8 +982,7 @@ proto_event(void *ptr)
       if_flush_ifaces(p);
     p->do_stop = 0;
 
-    if (proto_is_stopped(p))
-      proto_notify_state(p, PS_DOWN);
+    proto_check_stopped(p);
   }
 
   if (proto_is_done(p))
@@ -1933,9 +1928,7 @@ proto_do_stop(struct proto *p)
   ev_schedule(p->event);
 
   proto_stop_channels(p);
-
-  if (proto_is_stopped(p))
-    proto_notify_state(p, PS_DOWN);
+  proto_check_stopped(p);
 }
 
 static void

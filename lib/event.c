@@ -22,9 +22,9 @@
 #include "nest/bird.h"
 #include "lib/event.h"
 #include "lib/locking.h"
+#include "lib/io-loop.h"
 
 extern _Thread_local struct coroutine *this_coro;
-void io_loop_reload(void);
 
 event_list global_event_list;
 event_list global_work_list;
@@ -121,7 +121,7 @@ ev_schedule(event *e)
   ASSERT_THE_BIRD_LOCKED;
   ev_enqueue(&global_event_list, e);
   if (this_coro)
-    io_loop_reload();
+    birdloop_ping(&main_birdloop);
 }
 
 /**
@@ -136,11 +136,12 @@ ev_schedule(event *e)
 void
 ev_schedule_work(event *e)
 {
+  ASSERT_THE_BIRD_LOCKED;
   if (!ev_active(e))
     add_tail(&global_work_list, &e->n);
 
   if (this_coro)
-    io_loop_reload();
+    birdloop_ping(&main_birdloop);
 }
 
 void io_log_event(void *hook, void *data);
