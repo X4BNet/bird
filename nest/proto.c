@@ -429,7 +429,7 @@ channel_export_stopped(struct channel *c)
       bug("Stopping %s.%s export with invalid state %d", c->proto->name, c->name, es);
   }
 
-  c->stats.exp_routes = 0;
+  c->export_stats.routes = 0;
   bmap_reset(&c->export_map, 1024);
   bmap_reset(&c->export_reject_map, 1024);
 
@@ -559,7 +559,8 @@ channel_do_start(struct channel *c)
 
   bmap_init(&c->export_map, c->proto->pool, 1024);
   bmap_init(&c->export_reject_map, c->proto->pool, 1024);
-  memset(&c->stats, 0, sizeof(struct proto_stats));
+  memset(&c->export_stats, 0, sizeof(struct export_stats));
+  memset(&c->import_stats, 0, sizeof(struct import_stats));
 
   channel_reset_limit(&c->rx_limit);
   channel_reset_limit(&c->in_limit);
@@ -616,11 +617,12 @@ channel_do_down(struct channel *c)
   }
   RT_UNLOCK(c->table);
 
-  if ((c->stats.imp_routes + c->stats.filt_routes) != 0)
+  if ((c->import_stats.routes + c->import_stats.filtered) != 0)
     log(L_ERR "%s: Channel %s is down but still has some routes", c->proto->name, c->name);
 
   // bmap_free(&c->export_map);
-  memset(&c->stats, 0, sizeof(struct proto_stats));
+  memset(&c->import_stats, 0, sizeof(struct import_stats));
+  memset(&c->export_stats, 0, sizeof(struct export_stats));
 
   c->in_table = NULL;
   c->reload_event = NULL;
@@ -1878,19 +1880,19 @@ static void
 channel_verify_limits(struct channel *c)
 {
   struct channel_limit *l;
-  u32 all_routes = c->stats.imp_routes + c->stats.filt_routes;
+  u32 all_routes = c->import_stats.routes + c->import_stats.filtered;
 
   l = &c->rx_limit;
   if (l->action && (all_routes > l->limit))
     channel_notify_limit(c, l, PLD_RX, all_routes);
 
   l = &c->in_limit;
-  if (l->action && (c->stats.imp_routes > l->limit))
-    channel_notify_limit(c, l, PLD_IN, c->stats.imp_routes);
+  if (l->action && (c->import_stats.routes > l->limit))
+    channel_notify_limit(c, l, PLD_IN, c->import_stats.routes);
 
   l = &c->out_limit;
-  if (l->action && (c->stats.exp_routes > l->limit))
-    channel_notify_limit(c, l, PLD_OUT, c->stats.exp_routes);
+  if (l->action && (c->export_stats.routes > l->limit))
+    channel_notify_limit(c, l, PLD_OUT, c->export_stats.routes);
 }
 
 static inline void
@@ -2038,28 +2040,29 @@ proto_state_name(struct proto *p)
 static void
 channel_show_stats(struct channel *c)
 {
-  struct proto_stats *s = &c->stats;
+  struct import_stats *is = &c->import_stats;
+  struct export_stats *es = &c->export_stats;
 
   if (c->in_keep_filtered)
     cli_msg(-1006, "    Routes:         %u imported, %u filtered, %u exported, %u preferred",
-	    s->imp_routes, s->filt_routes, s->exp_routes, s->pref_routes);
+	    is->routes, is->filtered, es->routes, is->pref);
   else
     cli_msg(-1006, "    Routes:         %u imported, %u exported, %u preferred",
-	    s->imp_routes, s->exp_routes, s->pref_routes);
+	    is->routes, es->routes, is->pref);
 
   cli_msg(-1006, "    Route change stats:     received   rejected   filtered    ignored   accepted");
   cli_msg(-1006, "      Import updates:     %10u %10u %10u %10u %10u",
-	  s->imp_updates_received, s->imp_updates_invalid,
-	  s->imp_updates_filtered, s->imp_updates_ignored,
-	  s->imp_updates_accepted);
+	  is->updates_received, is->updates_invalid,
+	  is->updates_filtered, is->updates_ignored,
+	  is->updates_accepted);
   cli_msg(-1006, "      Import withdraws:   %10u %10u        --- %10u %10u",
-	  s->imp_withdraws_received, s->imp_withdraws_invalid,
-	  s->imp_withdraws_ignored, s->imp_withdraws_accepted);
+	  is->withdraws_received, is->withdraws_invalid,
+	  is->withdraws_ignored, is->withdraws_accepted);
   cli_msg(-1006, "      Export updates:     %10u %10u %10u        --- %10u",
-	  s->exp_updates_received, s->exp_updates_rejected,
-	  s->exp_updates_filtered, s->exp_updates_accepted);
+	  es->updates_received, es->updates_rejected,
+	  es->updates_filtered, es->updates_accepted);
   cli_msg(-1006, "      Export withdraws:   %10u        ---        ---        --- %10u",
-	  s->exp_withdraws_received, s->exp_withdraws_accepted);
+	  es->withdraws_received, es->withdraws_accepted);
 }
 
 void
