@@ -48,7 +48,7 @@
 #include "pipe.h"
 
 static void
-pipe_rt_notify(struct proto *P, struct channel *src_ch, linpool *lp, const net_addr *n, rte *new, const struct rte_storage *old)
+pipe_rt_notify(struct proto *P, struct channel *src_ch, linpool *lp, const net_addr *n, rte *new, rte *old)
 {
   struct pipe_proto *p = (void *) P;
   struct channel *dst = (src_ch == p->pri) ? p->sec : p->pri;
@@ -79,12 +79,13 @@ pipe_rt_notify(struct proto *P, struct channel *src_ch, linpool *lp, const net_a
 }
 
 static int
-pipe_preexport(struct channel *src_ch, struct rte *e)
+pipe_preexport(struct rt_export_request *src_req, struct rte *e)
 {
+  struct channel *src_ch = SKIP_BACK(struct channel, out, src_req);
   struct pipe_proto *p = (void *) src_ch->proto;
 
   /* Avoid direct loopbacks */
-  if (src_ch == e->sender)
+  if (src_ch->in.hook == e->sender)
     return -1;
 
   /* Indirection check */
@@ -95,8 +96,10 @@ pipe_preexport(struct channel *src_ch, struct rte *e)
 	e->generation, max_generation, src_ch->proto->name,
 	src_ch->table->name, e->net, e->src->proto->name, e->src->private_id, e->src->global_id);
 
+#if 0
     if (config->pipe_debug)
       e->sender->proto->rte_track(e->sender, e->net, e->src);
+#endif
     return -1;
   }
 
@@ -212,11 +215,13 @@ pipe_init(struct proto_config *CF)
   struct pipe_config *cf = (void *) CF;
 
   P->rt_notify = pipe_rt_notify;
-  P->preexport = pipe_preexport;
   P->reload_routes = pipe_reload_routes;
   P->rte_track = pipe_rte_track;
 
   pipe_configure_channels(p, cf);
+
+  p->pri->out.preexport = pipe_preexport;
+  p->sec->out.preexport = pipe_preexport;
 
   return P;
 }
@@ -247,10 +252,10 @@ pipe_get_status(struct proto *P, byte *buf)
 static void
 pipe_show_stats(struct pipe_proto *p)
 {
-  struct import_stats *s1i = &p->pri->import_stats;
-  struct export_stats *s1e = &p->pri->export_stats;
-  struct import_stats *s2i = &p->sec->import_stats;
-  struct export_stats *s2e = &p->sec->export_stats;
+  struct import_stats *s1i = &p->pri->in.hook->stats;
+  struct export_stats *s1e = &p->pri->out.hook->stats;
+  struct import_stats *s2i = &p->sec->in.hook->stats;
+  struct export_stats *s2e = &p->sec->out.hook->stats;
 
   /*
    * Pipe stats (as anything related to pipes) are a bit tricky. There
@@ -291,12 +296,11 @@ pipe_show_stats(struct pipe_proto *p)
 }
 
 static const char *pipe_feed_state[] = {
-  [ES_DOWN] = "down",
-  [ES_HUNGRY] = "feed pending",
-  [ES_FEEDING] = "feed running",
-  [ES_READY] = "up",
-  [ES_STOP] = "stopping",
-  [ES_RESTART] = "restart",
+  [TES_DOWN] = "down",
+  [TES_HUNGRY] = "feed pending",
+  [TES_FEEDING] = "feed running",
+  [TES_READY] = "up",
+  [TES_STOP] = "stopping",
 };
 
 static void
@@ -307,13 +311,13 @@ pipe_show_proto_info(struct proto *P)
   cli_msg(-1006, "  Channel %s", "main");
   cli_msg(-1006, "    Table:          %s", p->pri->table->name);
   cli_msg(-1006, "    Peer table:     %s", p->sec->table->name);
-  cli_msg(-1006, "    Import state:   %s", pipe_feed_state[atomic_load_explicit(&p->sec->export_state, memory_order_acquire)]);
-  cli_msg(-1006, "    Export state:   %s", pipe_feed_state[atomic_load_explicit(&p->pri->export_state, memory_order_acquire)]);
-  cli_msg(-1006, "    Import filter:  %s", filter_name(p->sec->out_filter));
-  cli_msg(-1006, "    Export filter:  %s", filter_name(p->pri->out_filter));
+  cli_msg(-1006, "    Import state:   %s", pipe_feed_state[p->sec->out.hook ? rt_export_get_state(p->sec->out.hook) : TES_DOWN]);
+  cli_msg(-1006, "    Export state:   %s", pipe_feed_state[p->pri->out.hook ? rt_export_get_state(p->pri->out.hook) : TES_DOWN]);
+  cli_msg(-1006, "    Import filter:  %s", filter_name(p->sec->out.filter));
+  cli_msg(-1006, "    Export filter:  %s", filter_name(p->pri->out.filter));
 
-  channel_show_limit(&p->pri->in_limit, "Import limit:");
-  channel_show_limit(&p->sec->in_limit, "Export limit:");
+  channel_show_limit(&p->pri->in.in_limit, "Import limit:");
+  channel_show_limit(&p->sec->in.in_limit, "Export limit:");
 
   if (P->proto_state != PS_DOWN)
     pipe_show_stats(p);

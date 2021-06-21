@@ -1661,8 +1661,9 @@ bgp_free_prefix(struct bgp_channel *c, struct bgp_prefix *px)
  */
 
 int
-bgp_preexport(struct channel *c, rte *e)
+bgp_preexport(struct rt_export_request *req, rte *e)
 {
+  struct channel *c = SKIP_BACK(struct channel, out, req);
   struct proto *SRC = e->src->proto;
   struct bgp_proto *p = (struct bgp_proto *) (c->proto);
   struct bgp_proto *src = (SRC->proto == &proto_bgp) ? (struct bgp_proto *) SRC : NULL;
@@ -1832,7 +1833,7 @@ bgp_update_attrs(struct bgp_proto *p, struct bgp_channel *c, rte *e, ea_list *at
 }
 
 void
-bgp_rt_notify(struct proto *P, struct channel *C, linpool *lp, const net_addr *n, rte *new, const struct rte_storage *old)
+bgp_rt_notify(struct proto *P, struct channel *C, linpool *lp, const net_addr *n, rte *new, rte *old)
 {
   struct bgp_proto *p = (void *) P;
   struct bgp_channel *c = (void *) C;

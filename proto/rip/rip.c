@@ -137,10 +137,6 @@ rip_announce_rte(struct rip_proto *p, struct rip_entry *en)
 {
   struct rip_rte *rt = en->routes;
 
-  /* May be accidentally called when the channel is flushing. */
-  if (p->p.main_channel->channel_state != CS_UP)
-    return;
-
   /* Find first valid rte */
   while (rt && !rip_valid_rte(rt))
     rt = rt->next;
@@ -316,7 +312,7 @@ rip_withdraw_rte(struct rip_proto *p, net_addr *n, struct rip_neighbor *from)
  */
 static void
 rip_rt_notify(struct proto *P, struct channel *ch UNUSED, linpool *lp UNUSED, const net_addr *net, struct rte *new,
-	      const struct rte_storage *old UNUSED)
+	      struct rte *old UNUSED)
 {
   struct rip_proto *p = (struct rip_proto *) P;
   struct rip_entry *en;

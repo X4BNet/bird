@@ -44,8 +44,7 @@ static int graceful_restart_state;
 static u32 graceful_restart_locks;
 
 static char *p_states[] = { "DOWN", "START", "UP", "STOP" };
-static char *c_states[] = { "DOWN", "START", "UP", "FLUSHING" };
-static char *e_states[] = { "DOWN", "HUNGRY", "FEEDING", "READY", "STOP", "RESTART" };
+static char *c_states[] = { "DOWN", "START", "UP", "STOP", "RESTART" };
 
 extern struct protocol proto_unix_iface;
 
@@ -54,23 +53,57 @@ static void proto_shutdown_loop(timer *);
 static void proto_rethink_goal(struct proto *p);
 static char *proto_state_name(struct proto *p);
 static void channel_verify_limits(struct channel *c);
+static void channel_in_notify_limit(struct rt_import_request *req, struct channel_limit *l, int dir, u32 rt_count);
 static inline void channel_reset_limit(struct channel_limit *l);
+static void channel_rte_invalid(struct rt_import_request *req, const char *msg, ...);
+
+static void channel_rte_export(struct rt_export_request *req, linpool *lp, const net_addr *n, rte *new, rte *old, int refeed);
+void channel_feed_begin(struct rt_export_request *req);
+void channel_feed_end(struct rt_export_request *req);
+static void channel_export_stopped(struct rt_export_request *req);
 
 static inline int proto_is_done(struct proto *p)
 { return (p->proto_state == PS_DOWN) && proto_is_inactive(p)
   && (atomic_load_explicit(&p->src_count, memory_order_acquire) == 0); }
 
 static inline int channel_is_active(struct channel *c)
-{ return (c->channel_state == CS_START) || (c->channel_state == CS_UP); }
+{ return (c->channel_state__XXX == XCS_START) || (c->channel_state__XXX == XCS_UP); }
 
 static inline int channel_reloadable(struct channel *c)
-{ return c->proto->reload_routes && c->reloadable; }
+{ return c->proto->reload_routes && c->in.reloadable; }
 
 void
 channel_log_state_change(struct channel *c)
 {
-  CD(c, "State changed to %s/%s", c_states[c->channel_state],
-      e_states[atomic_load_explicit(&c->export_state, memory_order_acquire)]);
+  CD(c, "State changed to %s", c_states[c->channel_state__XXX]);
+}
+
+void
+channel_import_log_state_change(struct rt_import_request *req, u8 state)
+{
+  struct channel *c = SKIP_BACK(struct channel, in, req);
+  CD(c, "Channel import state changed to %s", rt_import_state_name(state));
+}
+
+void
+channel_export_log_state_change(struct rt_export_request *req, u8 state)
+{
+  struct channel *c = SKIP_BACK(struct channel, out, req);
+  CD(c, "Channel export state changed to %s", rt_export_state_name(state));
+}
+
+static void
+channel_dump_import_req(struct rt_import_request *req)
+{
+  struct channel *c = SKIP_BACK(struct channel, in, req);
+  debug("  Channel %s.%s import request %p\n", c->proto->name, c->name, req);
+}
+
+static void
+channel_dump_export_req(struct rt_export_request *req)
+{
+  struct channel *c = SKIP_BACK(struct channel, out, req);
+  debug("  Channel %s.%s export request %p\n", c->proto->name, c->name, req);
 }
 
 static void
@@ -88,6 +121,32 @@ proto_log_state_change(struct proto *p)
   else
     p->last_state_name_announced = NULL;
 }
+
+
+static void
+channel_rte_trace(struct channel *c, rte *e, int dir, const char *msg)
+{
+  log(L_TRACE "%s.%s %c %s %N %s",
+      c->proto->name, c->name ?: "?", dir, msg, e->net,
+      e->attrs ? rta_dest_name(e->attrs->dest) : "-");
+}
+
+static inline void
+channel_rte_trace_in(uint flag, struct rt_import_request *req, rte *e, const char *msg)
+{
+  struct channel *c = SKIP_BACK(struct channel, in, req);
+  if ((c->debug & flag) || (c->proto->debug & flag))
+    channel_rte_trace(c, e, '>', msg);
+}
+
+static inline void
+channel_rte_trace_out(uint flag, struct rt_export_request *req, rte *e, const char *msg)
+{
+  struct channel *c = SKIP_BACK(struct channel, out, req);
+  if ((c->debug & flag) || (c->proto->debug & flag))
+    channel_rte_trace(c, e, '<', msg);
+}
+
 
 
 struct channel_config *
@@ -164,25 +223,42 @@ proto_add_channel(struct proto *p, struct channel_config *cf)
   c->channel = cf->channel;
   c->proto = p;
   c->table = cf->table->table;
-
-  c->in_filter = cf->in_filter;
-  c->out_filter = cf->out_filter;
-  c->rx_limit = cf->rx_limit;
-  c->in_limit = cf->in_limit;
-  c->out_limit = cf->out_limit;
-
   c->net_type = cf->net_type;
-  c->ra_mode = cf->ra_mode;
+
+  c->in = (struct rt_import_request) {
+    .filter = cf->in_filter,
+    .keep_filtered = cf->in_keep_filtered,
+    .reloadable = 1,
+    .rte_trace = channel_rte_trace_in,
+    .rte_invalid = channel_rte_invalid,
+    .notify_limit = channel_in_notify_limit,
+    .log_state_change = channel_import_log_state_change,
+    .dump_req = channel_dump_import_req,
+    .apply_rx_limit = 1,
+    .rx_limit = cf->rx_limit,
+    .in_limit = cf->in_limit,
+  };
+
+  c->out = (struct rt_export_request) {
+    .filter = cf->out_filter,
+    .ra_mode = cf->ra_mode,
+    .merge_limit = cf->merge_limit,
+    .rte_trace = channel_rte_trace_out,
+    .log_state_change = channel_export_log_state_change,
+    .dump_req = channel_dump_export_req,
+    .export = channel_rte_export,
+    .feed_begin = channel_feed_begin,
+    .feed_end = channel_feed_end,
+    .out_limit = cf->out_limit,
+  };
+
   c->preference = cf->preference;
+
   c->debug = cf->debug;
-  c->merge_limit = cf->merge_limit;
-  c->in_keep_filtered = cf->in_keep_filtered;
   c->rpki_reload = cf->rpki_reload;
 
-  c->channel_state = CS_DOWN;
-  atomic_store_explicit(&c->export_state, ES_DOWN, memory_order_release);
+  c->channel_state__XXX = XCS_DOWN;
   c->last_state_change = current_time();
-  c->reloadable = 1;
 
   init_list(&c->roa_subscriptions);
 
@@ -198,7 +274,7 @@ proto_add_channel(struct proto *p, struct channel_config *cf)
 void
 proto_remove_channel(struct proto *p UNUSED, struct channel *c)
 {
-  ASSERT(c->channel_state == CS_DOWN);
+  ASSERT(c->channel_state__XXX == XCS_DOWN);
 
   CD(c, "Removed", c->name);
 
@@ -213,7 +289,7 @@ proto_start_channels(struct proto *p)
   struct channel *c;
   WALK_LIST(c, p->channels)
     if (!c->disabled)
-      channel_set_state(c, CS_UP);
+      channel_set_state(c, XCS_UP);
 }
 
 static void
@@ -222,7 +298,7 @@ proto_pause_channels(struct proto *p)
   struct channel *c;
   WALK_LIST(c, p->channels)
     if (!c->disabled && channel_is_active(c))
-      channel_set_state(c, CS_START);
+      channel_set_state(c, XCS_RESTART);
 }
 
 static void
@@ -231,7 +307,7 @@ proto_stop_channels(struct proto *p)
   struct channel *c;
   WALK_LIST(c, p->channels)
     if (!c->disabled && channel_is_active(c))
-      channel_set_state(c, CS_FLUSHING);
+      channel_set_state(c, XCS_STOP);
 }
 
 static void
@@ -240,28 +316,6 @@ proto_remove_channels(struct proto *p)
   struct channel *c;
   WALK_LIST_FIRST(c, p->channels)
     proto_remove_channel(p, c);
-}
-
-static void
-channel_schedule_feed(struct channel *c, int initial)
-{
-  // DBG("%s: Scheduling meal\n", p->name);
-  ASSERT(c->channel_state == CS_UP);
-
-  DBG("Scheduling %sfeed for %s.%s from table %s\n",
-      initial ? "initial " : "re",
-      c->proto->name, c->name, c->table->name);
-
-  atomic_store_explicit(&c->export_state, ES_HUNGRY, memory_order_release);
-  c->refeeding = !initial;
-
-  if (initial)
-  {
-    ASSERT(c->export_coro == NULL);
-    c->export_coro = coro_run(c->proto->pool, channel_export_coro, c);
-  }
-  else
-    bsem_post(c->export_sem);
 }
 
 static void
@@ -282,15 +336,12 @@ static void
 channel_roa_out_changed(struct rt_subscription *s)
 {
   struct channel *c = s->data;
-  uint es = atomic_load_explicit(&c->export_state, memory_order_acquire);
-  int active = (es == ES_FEEDING) || (es == ES_HUNGRY);
+  CD(c, "Feeding triggered by RPKI change");
 
-  CD(c, "Feeding triggered by RPKI change%s", active ? " - already active" : "");
+  c->refeed_pending = 1;
 
-  if (!active)
-    channel_request_feeding(c);
-  else
-    c->refeed_pending = 1;
+  if (!c->feeding)
+    rt_stop_export(&c->out, channel_export_stopped);
 }
 
 /* Temporary code, subscriptions should be changed to resources */
@@ -342,7 +393,7 @@ channel_roa_unsubscribe(struct roa_subscription *s)
 static void
 channel_roa_subscribe_filter(struct channel *c, int dir)
 {
-  const struct filter *f = dir ? c->in_filter : c->out_filter;
+  const struct filter *f = dir ? c->in.filter : c->out.filter;
   rtable *tab;
   int valid = 1, found = 0;
 
@@ -402,76 +453,285 @@ channel_roa_unsubscribe_all(struct channel *c)
 }
 
 static void
+channel_start_import(struct channel *c)
+{
+  ASSERT(c->channel_state__XXX == XCS_UP);
+
+  DBG("%s.%s: Channel start import req=%p\n", c->proto->name, c->name, &c->in);
+  rt_request_import(c->table, &c->in);
+}
+
+static void
 channel_start_export(struct channel *c)
 {
-  ASSERT(c->channel_state == CS_UP);
+  ASSERT(c->channel_state__XXX == XCS_UP);
+  DBG("%s.%s: Channel start export req=%p\n", c->proto->name, c->name, &c->out);
+  rt_request_export(c->table, &c->out);
+}
+
+#if 0 && XXX_DROP_THIS_CODE
   ASSERT(atomic_load_explicit(&c->export_state, memory_order_acquire) == ES_DOWN);
 
   c->export_sem = bsem_new(c->proto->pool);
 
   channel_schedule_feed(c, 1);	/* Sets ES_HUNGRY */
 }
+#endif
 
 void
-channel_export_stopped(struct channel *c)
+channel_stopped(struct channel *c)
 {
-  uint state;
-  uint es = atomic_load_explicit(&c->export_state, memory_order_acquire);
-  switch (es)
+  DBG("%s.%s: Channel requests/hooks stopped (in state %s)\n", c->proto->name, c->name, c_states[c->channel_state__XXX]);
+
+  switch (c->channel_state__XXX)
   {
-    case ES_STOP:
-      state = CS_FLUSHING;
+    case XCS_STOP:
+      channel_set_state(c, XCS_DOWN);
+      c->proto->active_channels--;
+      proto_check_stopped(c->proto);
       break;
-    case ES_RESTART:
-      state = CS_START;
+    case XCS_RESTART:
+      channel_set_state(c, XCS_START);
       break;
     default:
-      bug("Stopping %s.%s export with invalid state %d", c->proto->name, c->name, es);
+      bug("Stopped channel in a bad state: %d", c->channel_state__XXX);
   }
 
-  c->export_stats.routes = 0;
-  bmap_reset(&c->export_map, 1024);
-  bmap_reset(&c->export_reject_map, 1024);
+  birdloop_ping(&main_birdloop);
+}
 
-  rfree(c->export_sem);
-  c->export_sem = NULL;
+void
+channel_import_stopped(struct rt_import_request *req)
+{
+  struct channel *c = SKIP_BACK(struct channel, in, req);
 
-  atomic_store_explicit(&c->export_state, ES_DOWN, memory_order_release);
+  birdloop_enter(&main_birdloop);
 
-  channel_set_state(c, state);
+  req->hook = NULL;
+
+  if (c->in_table)
+    rt_prune_sync(c->in_table, 1);
+
+  /* Export has also finished */
+  if (!c->out.hook)
+    channel_stopped(c);
+
+  birdloop_leave(&main_birdloop);
 }
 
 static void
-channel_stop_export(struct channel *c, uint state)
+channel_export_stopped(struct rt_export_request *req)
 {
-  DBG("Channel %s.%s must stop exports to reach state %s\n",
-      c->proto->name, c->name, c_states[state]);
+  struct channel *c = SKIP_BACK(struct channel, out, req);
 
-  ASSERT_DIE(atomic_load_explicit(&c->export_state, memory_order_acquire) != ES_DOWN);
+  birdloop_enter(&main_birdloop);
 
-  /* Wait for the export coroutine to stop. */
-  ASSERT_DIE(c->export_coro);
+  /* The hook has already stopped */
+  req->hook = NULL;
 
-  switch (state)
+  if (c->refeed_pending)
   {
-    case CS_FLUSHING:
-      atomic_store_explicit(&c->export_state, ES_STOP, memory_order_release);
-      break;
-    case CS_START:
-      atomic_store_explicit(&c->export_state, ES_RESTART, memory_order_release);
-      break;
-    default:
-      bug("Requesting %s.%s export stop with invalid state %d", c->proto->name, c->name, state);
+    req->refeeding = 1;
+    rt_request_export(c->table, req);
+    birdloop_leave(&main_birdloop);
+    return;
   }
 
-  bsem_post(c->export_sem);
+  if (c->out_table)
+  {
+    if (req->explicit_flush)
+      rt_flush_channel(c, the_bird_linpool);
+
+    /* Just free the routes */
+    rt_prune_sync(c->out_table, 1);
+  }
+
+  /* Import has also finished */
+  if (!c->in.hook)
+    channel_stopped(c);
+
+  birdloop_leave(&main_birdloop);
+}
+
+#if 0 && XXX_MOVE_THIS_CODE_ELSEWHERE
+  switch (c->channel_state__XXX)
+  {
+    case XCS_STOP:
+      channel_set_state(c, XCS_DOWN);
+      return;
+    case XCS_RESTART:
+      channel_set_state(c, XCS_START);
+      return;
+    default:
+      bug("Stopping %s.%s export with invalid state %d", c->proto->name, c->name, c->channel_state__XXX);
+  }
+}
+#endif
+
+void NONNULL(1,2)
+channel_rte_import(struct channel *c, rte *new, linpool *lp)
+{
+  ASSERT(new->net);
+  ASSERT(new->src);
+
+  if (new->attrs && !new->attrs->pref)
+  {
+    ASSERT(!new->attrs->cached);
+    new->attrs->pref = c->preference;
+  }
+
+  if (c->in_table && !rte_update_in(c, new))
+    return;
+
+  rte_import(&c->in, new, lp);
+}
+
+static void
+channel_rte_export(struct rt_export_request *req, linpool *lp, const net_addr *n, rte *new, rte *old, int refeed)
+{
+  struct channel *c = SKIP_BACK(struct channel, out, req);
+  struct proto *p = c->proto;
+  struct export_stats *stats = &req->hook->stats;
+
+  birdloop_enter(&main_birdloop);
+
+  if (p->proto_state != PS_UP)
+  {
+    log(L_TRACE "Route export of %N to %s.%s ignored, protocol state is %s",
+	n, p->name, c->name, p_states[p->proto_state]);
+    birdloop_leave(&main_birdloop);
+    return;
+  }
+
+  if (refeed && new)
+    c->refeed_count++;
+
+  /* Apply export limit */
+  struct channel_limit *l = &c->out_limit;
+  if (l->action && !old && new)
+  {
+    if (stats->routes >= l->limit)
+      channel_notify_limit(c, l, PLD_OUT, stats->routes);
+
+    if (l->state == PLS_BLOCKED)
+    {
+      stats->updates_limited++;
+      channel_rte_trace_out(D_FILTERS, req, new, "rejected [limit]");
+      birdloop_leave(&main_birdloop);
+      return;
+    }
+  }
+
+  /* Apply export table */
+  struct rte_storage *old_exported = NULL;
+  if (c->out_table)
+  {
+    if (!rte_update_out(c, lp, new, old, &old_exported))
+    {
+      channel_rte_trace_out(D_ROUTES, req, new, "idempotent");
+      birdloop_leave(&main_birdloop);
+      return;
+    }
+  }
+
+  if (p->debug & D_ROUTES)
+  {
+    if (new && old)
+      channel_rte_trace_out(D_ROUTES, req, new, "replaced");
+    else if (new)
+      channel_rte_trace_out(D_ROUTES, req, new, "added");
+    else if (old)
+      channel_rte_trace_out(D_ROUTES, req, old, "removed");
+  }
+
+  if (c->out_table)
+    if (old_exported)
+    {
+      rte old = rte_copy(old_exported);
+      p->rt_notify(p, c, lp, n, new, &old);
+    }
+    else
+      p->rt_notify(p, c, lp, n, new, NULL);
+  else
+    p->rt_notify(p, c, lp, n, new, old);
+
+  if (c->out_table && old_exported)
+  {
+    RT_LOCK(c->out_table);
+    net *net = old_exported->net;
+    rte_free(RT_PRIV(c->out_table), old_exported);
+
+    if (!net->routes)
+      fib_delete(&RT_PRIV(c->out_table)->fib, net);
+
+    RT_UNLOCK(c->out_table);
+  }
+
+  birdloop_leave(&main_birdloop);
+}
+
+void
+channel_feed_begin(struct rt_export_request *req)
+{
+  struct channel *c = SKIP_BACK(struct channel, out, req);
+
+  birdloop_enter(&main_birdloop);
+
+  if (c->proto->feed_begin)
+    c->proto->feed_begin(c, !req->refeeding);
+
+  birdloop_leave(&main_birdloop);
+}
+
+void
+channel_feed_end(struct rt_export_request *req)
+{
+  struct channel *c = SKIP_BACK(struct channel, out, req);
+
+  birdloop_enter(&main_birdloop);
+
+  /* Reset export limit if the feed ended with acceptable number of exported routes */
+  struct channel_limit *l = &c->out_limit;
+  if (req->refeeding &&
+      (l->state == PLS_BLOCKED) &&
+      (c->refeed_count <= l->limit) &&
+      (req->hook->stats.routes <= l->limit))
+  {
+    log(L_INFO "Protocol %s resets route export limit (%u)", c->proto->name, l->limit);
+
+    c->refeed_pending = 1;
+    rt_stop_export(req, channel_export_stopped);
+    return;
+  }
+
+  c->feeding = 0;
+
+  if (c->proto->feed_end)
+    c->proto->feed_end(c);
+
+  if (c->refeed_pending)
+    rt_stop_export(req, channel_export_stopped);
+  else
+    req->refeeding = 0;
+
+  birdloop_leave(&main_birdloop);
+}
+
+static void
+channel_rte_invalid(struct rt_import_request *req, const char *msg, ...)
+{
+  struct channel *c = SKIP_BACK(struct channel, in, req);
+  va_list args;
+  va_start(args, msg);
+  log(L_WARN "Ignoring %V received via %s.%s", args, c->proto->name, c->name);
+  va_end(args);
 }
 
 /* Called by protocol for reload from in_table */
 void
 channel_schedule_reload(struct channel *c)
 {
-  ASSERT(c->channel_state == CS_UP);
+  ASSERT(c->in.hook);
 
   rt_reload_channel_abort(c);
   ev_schedule_work(c->reload_event);
@@ -497,26 +757,6 @@ channel_reload_loop(void *ptr)
     channel_request_reload(c);
 }
 
-static void
-channel_reset_import(struct channel *c)
-{
-  /* Need to abort feeding */
-  ev_postpone(c->reload_event);
-  rt_reload_channel_abort(c);
-
-  rt_prune_sync(c->in_table, 1);
-}
-
-static void
-channel_reset_export(struct channel *c)
-{
-  if (c->explicit_flush)
-    rt_flush_channel(c, the_bird_linpool);
-
-  /* Just free the routes */
-  rt_prune_sync(c->out_table, 1);
-}
-
 /* Called by protocol to activate in_table */
 void
 channel_setup_in_table(struct channel *c)
@@ -528,6 +768,7 @@ channel_setup_in_table(struct channel *c)
   cf->internal = 1;
 
   c->in_table = rt_setup(c->proto->pool, cf);
+  c->in.apply_rx_limit = 0;
 
   c->reload_event = ev_new_init(c->proto->pool, channel_reload_loop, c);
 }
@@ -548,24 +789,7 @@ channel_setup_out_table(struct channel *c)
 static void
 channel_do_start(struct channel *c)
 {
-  RT_LOCK(c->table);
-  {
-    rtable_private *ptab = RT_PRIV(c->table);
-    rt_lock_table(ptab);
-    add_tail(&ptab->channels, &c->table_node);
-    c->proto->active_channels++;
-  }
-  RT_UNLOCK(c->table);
-
-  bmap_init(&c->export_map, c->proto->pool, 1024);
-  bmap_init(&c->export_reject_map, c->proto->pool, 1024);
-  memset(&c->export_stats, 0, sizeof(struct export_stats));
-  memset(&c->import_stats, 0, sizeof(struct import_stats));
-
-  channel_reset_limit(&c->rx_limit);
-  channel_reset_limit(&c->in_limit);
-  channel_reset_limit(&c->out_limit);
-
+  c->proto->active_channels++;
   CALL(c->channel->start, c);
 }
 
@@ -581,11 +805,21 @@ channel_do_up(struct channel *c)
 }
 
 static void
-channel_do_flush(struct channel *c)
+channel_do_stop(struct channel *c)
 {
-  RT_LOCK(c->table);
-  rt_schedule_prune(RT_PRIV(c->table));
-  RT_UNLOCK(c->table);
+  /* Need to abort feeding */
+  if (c->reload_event)
+  {
+    ev_postpone(c->reload_event);
+    rt_reload_channel_abort(c);
+  }
+
+  /* Stop import and export */
+  if (c->in.hook)
+    rt_stop_import(&c->in, channel_import_stopped);
+
+  if (c->out.hook)
+    rt_stop_export(&c->out, channel_export_stopped);
 
   c->gr_wait = 0;
   if (c->gr_lock)
@@ -593,37 +827,12 @@ channel_do_flush(struct channel *c)
 
   CALL(c->channel->shutdown, c);
 
-  /* This have to be done in here, as channel pool is freed before channel_do_down() */
-  bmap_free(&c->export_map);
-  bmap_free(&c->export_reject_map);
-  c->in_table = NULL;
-  c->reload_event = NULL;
-  c->out_table = NULL;
-
   channel_roa_unsubscribe_all(c);
 }
 
 static void
 channel_do_down(struct channel *c)
 {
-  ASSERT(!c->export_coro && !c->reload_active);
-
-  RT_LOCK(c->table);
-  {
-    rtable_private *ptab = RT_PRIV(c->table);
-    rem_node(&c->table_node);
-    rt_unlock_table(ptab);
-    c->proto->active_channels--;
-  }
-  RT_UNLOCK(c->table);
-
-  if ((c->import_stats.routes + c->import_stats.filtered) != 0)
-    log(L_ERR "%s: Channel %s is down but still has some routes", c->proto->name, c->name);
-
-  // bmap_free(&c->export_map);
-  memset(&c->import_stats, 0, sizeof(struct import_stats));
-  memset(&c->export_stats, 0, sizeof(struct export_stats));
-
   c->in_table = NULL;
   c->reload_event = NULL;
   c->out_table = NULL;
@@ -638,44 +847,30 @@ channel_do_down(struct channel *c)
 void
 channel_set_state(struct channel *c, uint state)
 {
-  uint cs = c->channel_state;
-  uint es = atomic_load_explicit(&c->export_state, memory_order_acquire);
+  uint cs = c->channel_state__XXX;
 
   DBG("%s reporting channel %s state transition %s -> %s\n", c->proto->name, c->name, c_states[cs], c_states[state]);
-  if (state == cs)
-    return;
 
-  if (es != ES_DOWN)
-  {
-    ASSERT_DIE(c->channel_state == CS_UP);
-    channel_stop_export(c, state);
-    return;
-  }
-
-  c->channel_state = state;
+  c->channel_state__XXX = state;
   c->last_state_change = current_time();
 
   switch (state)
   {
-  case CS_START:
-    ASSERT(cs == CS_DOWN || cs == CS_UP);
+  case XCS_START:
+    ASSERT(cs == XCS_DOWN || cs == XCS_RESTART);
 
-    if (cs == CS_DOWN)
+    if (cs == XCS_DOWN)
       channel_do_start(c);
-
-    if (c->in_table && (cs == CS_UP))
-      channel_reset_import(c);
-
-    if (c->out_table && (cs == CS_UP))
-      channel_reset_export(c);
 
     break;
 
-  case CS_UP:
-    ASSERT(cs == CS_DOWN || cs == CS_START);
+  case XCS_UP:
+    ASSERT(cs == XCS_DOWN || cs == XCS_START);
 
-    if (cs == CS_DOWN)
+    if (cs == XCS_DOWN)
       channel_do_start(c);
+
+    channel_start_import(c);
 
     if (!c->gr_wait && c->proto->rt_notify)
       channel_start_export(c);
@@ -683,20 +878,15 @@ channel_set_state(struct channel *c, uint state)
     channel_do_up(c);
     break;
 
-  case CS_FLUSHING:
-    ASSERT(cs == CS_START || cs == CS_UP);
+  case XCS_STOP:
+  case XCS_RESTART:
+    ASSERT(cs == XCS_UP);
+    channel_do_stop(c);
 
-    if (c->in_table && (cs == CS_UP))
-      channel_reset_import(c);
-
-    if (c->out_table && (cs == CS_UP))
-      channel_reset_export(c);
-
-    channel_do_flush(c);
     break;
 
-  case CS_DOWN:
-    ASSERT(cs == CS_FLUSHING);
+  case XCS_DOWN:
+    ASSERT(cs == XCS_STOP);
 
     channel_do_down(c);
     break;
@@ -721,34 +911,18 @@ channel_set_state(struct channel *c, uint state)
 void
 channel_request_feeding(struct channel *c)
 {
-  ASSERT(c->channel_state == CS_UP);
+  ASSERT(c->out.hook);
 
-  CD(c, "Feeding requested");
-
-  uint es;
-  switch (es = atomic_load_explicit(&c->export_state, memory_order_acquire))
-  {
-    case ES_DOWN:
-    case ES_HUNGRY:
-    case ES_RESTART:
-    case ES_STOP:
-      return;
-
-    case ES_FEEDING:
-    case ES_READY:
-      channel_schedule_feed(c, 0);
-      channel_log_state_change(c);
-      return;
-
-    default:
-      bug("Strange export state of %s.%s when feeding requested: %d", c->proto->name, c->name, es);
-  }
+  c->refeed_pending = 1;
+  rt_stop_export(&c->out, channel_export_stopped);
 }
 
 static void
 channel_request_reload(struct channel *c)
 {
-  ASSERT(c->channel_state == CS_UP);
+  RT_LOCK(c->table);
+
+  ASSERT(c->in.hook);
   ASSERT(channel_reloadable(c));
 
   CD(c, "Reload requested");
@@ -759,8 +933,10 @@ channel_request_reload(struct channel *c)
    * Should this be done before reload_routes() hook?
    * Perhaps, but routes are updated asynchronously.
    */
-  channel_reset_limit(&c->rx_limit);
-  channel_reset_limit(&c->in_limit);
+  channel_reset_limit(&c->in.rx_limit);
+  channel_reset_limit(&c->in.in_limit);
+
+  RT_UNLOCK(c->table);
 }
 
 const struct channel_class channel_basic = {
@@ -846,32 +1022,32 @@ int
 channel_reconfigure(struct channel *c, struct channel_config *cf)
 {
   /* FIXME: better handle these changes, also handle in_keep_filtered */
-  if ((c->table != cf->table->table) || (cf->ra_mode && (c->ra_mode != cf->ra_mode)))
+  if ((c->table != cf->table->table) || (cf->ra_mode && (c->out.ra_mode != cf->ra_mode)))
     return 0;
 
   /* Note that filter_same() requires arguments in (new, old) order */
-  int import_changed = !filter_same(cf->in_filter, c->in_filter);
-  int export_changed = !filter_same(cf->out_filter, c->out_filter);
+  int import_changed = !filter_same(cf->in_filter, c->in.filter);
+  int export_changed = !filter_same(cf->out_filter, c->out.filter);
   int rpki_reload_changed = (cf->rpki_reload != c->rpki_reload);
 
   if (c->preference != cf->preference)
     import_changed = 1;
 
-  if (c->merge_limit != cf->merge_limit)
+  if (c->out.merge_limit != cf->merge_limit)
     export_changed = 1;
 
   /* Reconfigure channel fields */
-  c->in_filter = cf->in_filter;
-  c->out_filter = cf->out_filter;
-  c->rx_limit = cf->rx_limit;
-  c->in_limit = cf->in_limit;
-  c->out_limit = cf->out_limit;
+  c->in.filter = cf->in_filter;
+  c->out.filter = cf->out_filter;
+  c->in.rx_limit = cf->rx_limit;
+  c->in.in_limit = cf->in_limit;
+  c->out.out_limit = cf->out_limit;
 
   // c->ra_mode = cf->ra_mode;
   c->preference = cf->preference;
-  c->merge_limit = cf->merge_limit;
+  c->out.merge_limit = cf->merge_limit;
   c->debug = cf->debug;
-  c->in_keep_filtered = cf->in_keep_filtered;
+  c->in.keep_filtered = cf->in_keep_filtered;
   c->rpki_reload = cf->rpki_reload;
 
   channel_verify_limits(c);
@@ -881,7 +1057,7 @@ channel_reconfigure(struct channel *c, struct channel_config *cf)
     return 0;
 
   /* If the channel is not open, it has no routes and we cannot reload it anyways */
-  if (c->channel_state != CS_UP)
+  if (c->channel_state__XXX != XCS_UP)
     goto done;
 
   /* Update RPKI/ROA subscriptions */
@@ -945,7 +1121,7 @@ proto_configure_channel(struct proto *p, struct channel **pc, struct channel_con
   }
   else if (c && !cf)
   {
-    if (c->channel_state != CS_DOWN)
+    if (c->channel_state__XXX != XCS_DOWN)
     {
       log(L_INFO "Cannot remove channel %s.%s", c->proto->name, c->name);
       return 0;
@@ -992,12 +1168,12 @@ proto_event(void *ptr)
     if (p->proto->cleanup && !p->proto->cleanup(p))
     {
       /* The protocol failed to cleanup, we'll try again. */
-      debug("Will retry protocol %s cleanup\n", p->name);
+      DBG("Will retry protocol %s cleanup\n", p->name);
       ev_schedule(p->event);
       return;
     }
 
-    debug("Protocol %s finally done\n", p->name);
+    DBG("Protocol %s finally done\n", p->name);
 
     rfree(p->pool);
     p->pool = NULL;
@@ -1567,7 +1743,7 @@ graceful_restart_done(timer *t UNUSED)
     WALK_LIST(c, p->channels)
     {
       /* Resume postponed export of routes */
-      if ((c->channel_state == CS_UP) && c->gr_wait && c->proto->rt_notify)
+      if ((c->channel_state__XXX == XCS_UP) && c->gr_wait && p->rt_notify)
 	channel_start_export(c);
 
       /* Cleanup */
@@ -1663,12 +1839,13 @@ protos_dump_all(void)
     WALK_LIST(c, p->channels)
     {
       debug("\tTABLE %s\n", c->table->name);
-      if (c->in_filter)
-	debug("\tInput filter: %s\n", filter_name(c->in_filter));
-      if (c->out_filter)
-	debug("\tOutput filter: %s\n", filter_name(c->out_filter));
-      debug("\tChannel state: %s/%s\n", c_states[c->channel_state],
-	  e_states[atomic_load_explicit(&c->export_state, memory_order_acquire)]);
+      if (c->in.filter)
+	debug("\tInput filter: %s\n", filter_name(c->in.filter));
+      if (c->out.filter)
+	debug("\tOutput filter: %s\n", filter_name(c->out.filter));
+      debug("\tChannel state: %s/%s/%s\n", c_states[c->channel_state__XXX],
+	  c->in.hook ? rt_import_state_name(rt_import_get_state(c->in.hook)) : "-",
+	  c->out.hook ? rt_export_state_name(rt_export_get_state(c->out.hook)) : "-");
     }
 
     if (p->proto->dump && (p->proto_state != PS_DOWN))
@@ -1877,22 +2054,40 @@ channel_notify_limit(struct channel *c, struct channel_limit *l, int dir, u32 rt
 }
 
 static void
+channel_in_notify_limit(struct rt_import_request *req, struct channel_limit *l, int dir, u32 rt_count)
+{
+  return channel_notify_limit(SKIP_BACK(struct channel, in, req), l, dir, rt_count);
+}
+
+static void
 channel_verify_limits(struct channel *c)
 {
+  RT_LOCK(c->table);
+
   struct channel_limit *l;
-  u32 all_routes = c->import_stats.routes + c->import_stats.filtered;
+  if (c->in.hook)
+  {
+    struct import_stats *stats = &c->in.hook->stats;
+    u32 all_routes = stats->routes + stats->filtered;
 
-  l = &c->rx_limit;
-  if (l->action && (all_routes > l->limit))
-    channel_notify_limit(c, l, PLD_RX, all_routes);
+    l = &c->in.rx_limit;
+    if (l->action && (all_routes > l->limit))
+      channel_notify_limit(c, l, PLD_RX, all_routes);
 
-  l = &c->in_limit;
-  if (l->action && (c->import_stats.routes > l->limit))
-    channel_notify_limit(c, l, PLD_IN, c->import_stats.routes);
+    l = &c->in.in_limit;
+    if (l->action && (stats->routes > l->limit))
+      channel_notify_limit(c, l, PLD_IN, stats->routes);
+  }
 
-  l = &c->out_limit;
-  if (l->action && (c->export_stats.routes > l->limit))
-    channel_notify_limit(c, l, PLD_OUT, c->export_stats.routes);
+  if (c->out.hook)
+  {
+    struct export_stats *stats = &c->out.hook->stats;
+    l = &c->out.out_limit;
+    if (l->action && (stats->routes > l->limit))
+      channel_notify_limit(c, l, PLD_OUT, stats->routes);
+  }
+  
+  RT_UNLOCK(c->table);
 }
 
 static inline void
@@ -2040,29 +2235,42 @@ proto_state_name(struct proto *p)
 static void
 channel_show_stats(struct channel *c)
 {
-  struct import_stats *is = &c->import_stats;
-  struct export_stats *es = &c->export_stats;
+  RT_LOCK(c->table);
 
-  if (c->in_keep_filtered)
+  struct import_stats *is = c->in.hook ? &c->in.hook->stats : NULL;
+  struct export_stats *es = c->out.hook ? &c->out.hook->stats : NULL;
+
+#define SON(ie, item)	((ie) ? (ie)->item : 0)
+#define SI(item) SON(is, item)
+#define SE(item) SON(es, item)
+
+  if (c->in.keep_filtered)
     cli_msg(-1006, "    Routes:         %u imported, %u filtered, %u exported, %u preferred",
-	    is->routes, is->filtered, es->routes, is->pref);
+	    SI(routes), SI(filtered), SE(routes), SI(pref));
   else
     cli_msg(-1006, "    Routes:         %u imported, %u exported, %u preferred",
-	    is->routes, es->routes, is->pref);
+	    SI(routes), SE(routes), SI(pref));
 
-  cli_msg(-1006, "    Route change stats:     received   rejected   filtered    ignored   accepted");
-  cli_msg(-1006, "      Import updates:     %10u %10u %10u %10u %10u",
-	  is->updates_received, is->updates_invalid,
-	  is->updates_filtered, is->updates_ignored,
-	  is->updates_accepted);
-  cli_msg(-1006, "      Import withdraws:   %10u %10u        --- %10u %10u",
-	  is->withdraws_received, is->withdraws_invalid,
-	  is->withdraws_ignored, is->withdraws_accepted);
-  cli_msg(-1006, "      Export updates:     %10u %10u %10u        --- %10u",
-	  es->updates_received, es->updates_rejected,
-	  es->updates_filtered, es->updates_accepted);
-  cli_msg(-1006, "      Export withdraws:   %10u        ---        ---        --- %10u",
-	  es->withdraws_received, es->withdraws_accepted);
+  cli_msg(-1006, "    Route change stats:     received   rejected   filtered    ignored    limited   accepted");
+  cli_msg(-1006, "      Import updates:     %10u %10u %10u %10u %10u %10u",
+	  SI(updates_received), SI(updates_invalid),
+	  SI(updates_filtered), SI(updates_ignored),
+	  SI(updates_limited_rx) + SI(updates_limited_in),
+	  SI(updates_accepted));
+  cli_msg(-1006, "      Import withdraws:   %10u %10u        --- %10u        --- %10u",
+	  SI(withdraws_received), SI(withdraws_invalid),
+	  SI(withdraws_ignored), SI(withdraws_accepted));
+  cli_msg(-1006, "      Export updates:     %10u %10u %10u        --- %10u %10u",
+	  SE(updates_received), SE(updates_rejected),
+	  SE(updates_filtered), SE(updates_limited), SE(updates_accepted));
+  cli_msg(-1006, "      Export withdraws:   %10u        ---        ---        ---         ---%10u",
+	  SE(withdraws_received), SE(withdraws_accepted));
+
+#undef SI
+#undef SE
+#undef SON
+
+  RT_UNLOCK(c->table);
 }
 
 void
@@ -2079,23 +2287,24 @@ void
 channel_show_info(struct channel *c)
 {
   cli_msg(-1006, "  Channel %s", c->name);
-  cli_msg(-1006, "    State:          %s", c_states[c->channel_state]);
-  cli_msg(-1006, "    Export state:   %s", e_states[atomic_load_explicit(&c->export_state, memory_order_acquire)]);
+  cli_msg(-1006, "    State:          %s", c_states[c->channel_state__XXX]);
+  cli_msg(-1006, "    Import state:   %s", c->in.hook ? rt_import_state_name(rt_import_get_state(c->in.hook)) : "DOWN");
+  cli_msg(-1006, "    Export state:   %s", c->out.hook ? rt_export_state_name(rt_export_get_state(c->out.hook)) : "DOWN");
   cli_msg(-1006, "    Table:          %s", c->table->name);
   cli_msg(-1006, "    Preference:     %d", c->preference);
-  cli_msg(-1006, "    Input filter:   %s", filter_name(c->in_filter));
-  cli_msg(-1006, "    Output filter:  %s", filter_name(c->out_filter));
+  cli_msg(-1006, "    Input filter:   %s", filter_name(c->in.filter));
+  cli_msg(-1006, "    Output filter:  %s", filter_name(c->out.filter));
 
   if (graceful_restart_state == GRS_ACTIVE)
     cli_msg(-1006, "    GR recovery:   %s%s",
 	    c->gr_lock ? " pending" : "",
 	    c->gr_wait ? " waiting" : "");
 
-  channel_show_limit(&c->rx_limit, "Receive limit:");
-  channel_show_limit(&c->in_limit, "Import limit:");
-  channel_show_limit(&c->out_limit, "Export limit:");
+  channel_show_limit(&c->in.rx_limit, "Receive limit:");
+  channel_show_limit(&c->in.in_limit, "Import limit:");
+  channel_show_limit(&c->out.out_limit, "Export limit:");
 
-  if (c->channel_state != CS_DOWN)
+  if (c->channel_state__XXX != XCS_DOWN)
     channel_show_stats(c);
 }
 
@@ -2225,7 +2434,7 @@ proto_cmd_reload(struct proto *p, uintptr_t dir, int cnt UNUSED)
   /* All channels must support reload */
   if (dir != CMD_RELOAD_OUT)
     WALK_LIST(c, p->channels)
-      if ((c->channel_state == CS_UP) && !channel_reloadable(c))
+      if ((c->channel_state__XXX == XCS_UP) && !channel_reloadable(c))
       {
 	cli_msg(-8006, "%s: reload failed", p->name);
 	return;
@@ -2236,13 +2445,13 @@ proto_cmd_reload(struct proto *p, uintptr_t dir, int cnt UNUSED)
   /* re-importing routes */
   if (dir != CMD_RELOAD_OUT)
     WALK_LIST(c, p->channels)
-      if (c->channel_state == CS_UP)
+      if (c->channel_state__XXX == XCS_UP)
 	channel_request_reload(c);
 
   /* re-exporting routes */
   if (dir != CMD_RELOAD_IN)
     WALK_LIST(c, p->channels)
-      if (c->channel_state == CS_UP)
+      if (c->channel_state__XXX == XCS_UP)
 	channel_request_feeding(c);
 
   cli_msg(-15, "%s: reloading", p->name);

@@ -633,9 +633,6 @@ babel_announce_rte(struct babel_proto *p, struct babel_entry *e)
   struct babel_route *r = e->selected;
   struct channel *c = (e->n.addr->type == NET_IP4) ? p->ip4_channel : p->ip6_channel;
 
-  if (c->channel_state != CS_UP)
-    return;
-
   if (r)
   {
     rta a0 = {
@@ -720,9 +717,6 @@ static inline void
 babel_announce_retraction(struct babel_proto *p, struct babel_entry *e)
 {
   struct channel *c = (e->n.addr->type == NET_IP4) ? p->ip4_channel : p->ip6_channel;
-
-  if (c->channel_state != CS_UP)
-    return;
 
   e->unreachable = 0;
   rte_withdraw(c, e->n.addr, p->p.main_source);
@@ -1240,7 +1234,7 @@ babel_handle_update(union babel_msg *m, struct babel_iface *ifa)
   }
 
   struct channel *c = (msg->net.type == NET_IP4) ? p->ip4_channel : p->ip6_channel;
-  if (!c || (c->channel_state != CS_UP))
+  if (!c || (c->channel_state__XXX != XCS_UP))
   {
     DBG("Babel: Ignoring update for inactive address family.\n");
     return;
@@ -2125,8 +2119,10 @@ babel_kick_timer(struct babel_proto *p)
 
 
 static int
-babel_preexport(struct channel *c, struct rte *new)
+babel_preexport(struct rt_export_request *req, struct rte *new)
 {
+  struct channel *c = SKIP_BACK(struct channel, out, req);
+
   /* Reject our own unreachable routes */
   if ((new->attrs->dest == RTD_UNREACHABLE) && (new->src->proto == c->proto))
     return -1;
@@ -2140,7 +2136,7 @@ babel_preexport(struct channel *c, struct rte *new)
  */
 static void
 babel_rt_notify(struct proto *P, struct channel *c UNUSED, linpool *lp UNUSED,
-		const net_addr *net, struct rte *new, const struct rte_storage *old UNUSED)
+		const net_addr *net, struct rte *new, struct rte *old UNUSED)
 {
   struct babel_proto *p = (void *) P;
   struct babel_entry *e;
@@ -2239,9 +2235,10 @@ babel_init(struct proto_config *CF)
 
   P->if_notify = babel_if_notify;
   P->rt_notify = babel_rt_notify;
-  P->preexport = babel_preexport;
   P->rte_better = babel_rte_better;
 
+  p->ip4_channel->out.preexport = babel_preexport;
+  p->ip6_channel->out.preexport = babel_preexport;
   return P;
 }
 

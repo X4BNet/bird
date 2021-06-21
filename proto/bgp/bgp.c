@@ -614,7 +614,7 @@ bgp_conn_enter_established_state(struct bgp_conn *conn)
 
     int active = loc->ready && rem->ready;
     c->c.disabled = !active;
-    c->c.reloadable = p->route_refresh || c->cf->import_table;
+    c->c.in.reloadable = p->route_refresh || c->cf->import_table;
 
     c->index = active ? num++ : 0;
 
@@ -663,11 +663,11 @@ bgp_conn_enter_established_state(struct bgp_conn *conn)
 
     /* Update RA mode */
     if (c->add_path_tx)
-      c->c.ra_mode = RA_ANY;
+      c->c.out.ra_mode = RA_ANY;
     else if (c->cf->secondary)
-      c->c.ra_mode = RA_ACCEPTED;
+      c->c.out.ra_mode = RA_ACCEPTED;
     else
-      c->c.ra_mode = RA_OPTIMAL;
+      c->c.out.ra_mode = RA_OPTIMAL;
   }
 
   p->afi_map = mb_alloc(p->p.pool, num * sizeof(u32));
@@ -768,25 +768,25 @@ bgp_handle_graceful_restart(struct bgp_proto *p)
       {
       case BGP_GRS_NONE:
 	c->gr_active = BGP_GRS_ACTIVE;
-	rt_refresh_begin(c->c.table, &c->c);
+	rt_refresh_begin(c->c.table, &c->c.in);
 	break;
 
       case BGP_GRS_ACTIVE:
-	rt_refresh_end(c->c.table, &c->c);
-	rt_refresh_begin(c->c.table, &c->c);
+	rt_refresh_end(c->c.table, &c->c.in);
+	rt_refresh_begin(c->c.table, &c->c.in);
 	break;
 
       case BGP_GRS_LLGR:
-	rt_refresh_begin(c->c.table, &c->c);
-	rt_modify_stale(c->c.table, &c->c);
+	rt_refresh_begin(c->c.table, &c->c.in);
+	rt_modify_stale(c->c.table, &c->c.in);
 	break;
       }
     }
     else
     {
       /* Just flush the routes */
-      rt_refresh_begin(c->c.table, &c->c);
-      rt_refresh_end(c->c.table, &c->c);
+      rt_refresh_begin(c->c.table, &c->c.in);
+      rt_refresh_end(c->c.table, &c->c.in);
     }
 
     /* Reset bucket and prefix tables */
@@ -827,7 +827,7 @@ bgp_graceful_restart_done(struct bgp_channel *c)
     BGP_TRACE(D_EVENTS, "Neighbor graceful restart done");
 
   tm_stop(c->stale_timer);
-  rt_refresh_end(c->c.table, &c->c);
+  rt_refresh_end(c->c.table, &c->c.in);
 }
 
 /**
@@ -869,7 +869,7 @@ bgp_graceful_restart_timeout(timer *t)
       /* Channel is in GR, and supports LLGR -> start LLGR */
       c->gr_active = BGP_GRS_LLGR;
       tm_start(c->stale_timer, c->stale_time S);
-      rt_modify_stale(c->c.table, &c->c);
+      rt_modify_stale(c->c.table, &c->c.in);
     }
   }
   else
@@ -907,10 +907,10 @@ bgp_refresh_begin(struct bgp_channel *c)
   { log(L_WARN "%s: BEGIN-OF-RR received before END-OF-RIB, ignoring", p->p.name); return; }
 
   c->load_state = BFS_REFRESHING;
-  rt_refresh_begin(c->c.table, &c->c);
+  rt_refresh_begin(c->c.table, &c->c.in);
 
   if (c->c.in_table)
-    rt_refresh_begin(c->c.in_table, &c->c);
+    rt_refresh_begin(c->c.in_table, &c->c.in);
 }
 
 /**
@@ -931,7 +931,7 @@ bgp_refresh_end(struct bgp_channel *c)
   { log(L_WARN "%s: END-OF-RR received without prior BEGIN-OF-RR, ignoring", p->p.name); return; }
 
   c->load_state = BFS_NONE;
-  rt_refresh_end(c->c.table, &c->c);
+  rt_refresh_end(c->c.table, &c->c.in);
 
   if (c->c.in_table)
     rt_prune_sync(c->c.in_table, 0);
@@ -1677,7 +1677,6 @@ bgp_init(struct proto_config *CF)
   struct bgp_config *cf = (struct bgp_config *) CF;
 
   P->rt_notify = bgp_rt_notify;
-  P->preexport = bgp_preexport;
   P->neigh_notify = bgp_neigh_notify;
   P->reload_routes = bgp_reload_routes;
   P->feed_begin = bgp_feed_begin;
@@ -1685,7 +1684,6 @@ bgp_init(struct proto_config *CF)
   P->rte_better = bgp_rte_better;
   P->rte_mergable = bgp_rte_mergable;
   P->rte_recalculate = cf->deterministic_med ? bgp_rte_recalculate : NULL;
-  P->rte_modify = bgp_rte_modify_stale;
 
   p->cf = cf;
   p->is_internal = (cf->local_as == cf->remote_as);
@@ -1707,7 +1705,11 @@ bgp_init(struct proto_config *CF)
   /* Add all channels */
   struct bgp_channel_config *cc;
   WALK_LIST(cc, CF->channels)
-    proto_add_channel(P, &cc->c);
+  {
+    struct channel *c = proto_add_channel(P, &cc->c);
+    c->out.preexport = bgp_preexport;
+    c->in.rte_modify = bgp_rte_modify_stale;
+  }
 
   return P;
 }
@@ -2123,7 +2125,7 @@ bgp_channel_reconfigure(struct channel *C, struct channel_config *CC, int *impor
       (IGP_TABLE(new, ip6) != IGP_TABLE(old, ip6)))
     return 0;
 
-  if (new->mandatory && !old->mandatory && (C->channel_state != CS_UP))
+  if (new->mandatory && !old->mandatory && (C->channel_state__XXX != XCS_UP))
     return 0;
 
   if ((new->gw_mode != old->gw_mode) ||
@@ -2131,7 +2133,7 @@ bgp_channel_reconfigure(struct channel *C, struct channel_config *CC, int *impor
       (new->cost != old->cost))
   {
     /* import_changed itself does not force ROUTE_REFRESH when import_table is active */
-    if (c->c.in_table && (c->c.channel_state == CS_UP))
+    if (c->c.in_table && (c->c.channel_state__XXX == XCS_UP))
       bgp_schedule_packet(p->conn, c, PKT_ROUTE_REFRESH);
 
     *import_changed = 1;
@@ -2521,7 +2523,7 @@ bgp_show_proto_info(struct proto *P)
       if (c->stale_timer && tm_active(c->stale_timer))
 	cli_msg(-1006, "    LL stale timer: %t/-", tm_remains(c->stale_timer));
 
-      if (c->c.channel_state == CS_UP)
+      if (c->c.channel_state__XXX == XCS_UP)
       {
 	if (ipa_zero(c->link_addr))
 	  cli_msg(-1006, "    BGP Next hop:   %I", c->next_hop_addr);

@@ -55,7 +55,7 @@ dev_ifa_notify(struct proto *P, uint flags, struct ifa *ad)
     return;
 
   /* Ignore notifications when not up */
-  if (c->channel_state != CS_UP)
+  if (c->channel_state__XXX != XCS_UP)
     return;
 
   /* For IPv6 SADR, replace regular prefix with SADR prefix */

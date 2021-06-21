@@ -774,8 +774,9 @@ krt_scan_timer_kick(struct krt_proto *p)
  */
 
 static int
-krt_preexport(struct channel *c, rte *e)
+krt_preexport(struct rt_export_request *req, rte *e)
 {
+  struct channel *c = SKIP_BACK(struct channel, in, req);
 #ifndef CONFIG_SINGLE_ROUTE
   if (e->src->proto == c->proto)
     return -1;
@@ -789,7 +790,7 @@ krt_preexport(struct channel *c, rte *e)
 
 static void
 krt_rt_notify(struct proto *P, struct channel *ch UNUSED, linpool *lp UNUSED, const net_addr *net,
-	      rte *new, const struct rte_storage *old)
+	      rte *new, rte *old)
 {
   struct krt_proto *p = (struct krt_proto *) P;
 
@@ -814,8 +815,7 @@ krt_rt_notify(struct proto *P, struct channel *ch UNUSED, linpool *lp UNUSED, co
 
   if (!p->resync_rte)
   {
-    rte old_copy = old ? rte_copy(old) : (rte) {};
-    krt_replace_rte(p, new, old ? &old_copy : NULL);
+    krt_replace_rte(p, new, old);
     return;
   }
 
@@ -934,9 +934,9 @@ krt_init(struct proto_config *CF)
   // struct krt_config *cf = (void *) CF;
 
   p->p.main_channel = proto_add_channel(&p->p, proto_cf_main_channel(CF));
-  p->p.main_channel->explicit_flush = 1;
+  p->p.main_channel->out.explicit_flush = 1;
+  p->p.main_channel->out.preexport = krt_preexport;
 
-  p->p.preexport = krt_preexport;
   p->p.rt_notify = krt_rt_notify;
   p->p.if_notify = krt_if_notify;
   p->p.reload_routes = krt_reload_routes;

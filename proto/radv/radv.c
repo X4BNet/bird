@@ -391,8 +391,9 @@ radv_net_match_trigger(struct radv_config *cf, const net_addr *n)
 }
 
 int
-radv_preexport(struct channel *c, rte *new)
+radv_preexport(struct rt_export_request *req, rte *new)
 {
+  struct channel *c = SKIP_BACK(struct channel, out, req);
   struct radv_config *cf = (struct radv_config *) (c->proto->cf);
 
   if (radv_net_match_trigger(cf, new->net))
@@ -405,7 +406,7 @@ radv_preexport(struct channel *c, rte *new)
 }
 
 static void
-radv_rt_notify(struct proto *P, struct channel *ch UNUSED, linpool *lp UNUSED, const net_addr *n, rte *new, const struct rte_storage *old UNUSED)
+radv_rt_notify(struct proto *P, struct channel *ch UNUSED, linpool *lp UNUSED, const net_addr *n, rte *new, rte *old UNUSED)
 {
   struct radv_proto *p = (struct radv_proto *) P;
   struct radv_config *cf = (struct radv_config *) (P->cf);
@@ -562,8 +563,8 @@ radv_init(struct proto_config *CF)
   struct proto *P = proto_new(CF);
 
   P->main_channel = proto_add_channel(P, proto_cf_main_channel(CF));
+  P->main_channel->out.preexport = radv_preexport;
 
-  P->preexport = radv_preexport;
   P->rt_notify = radv_rt_notify;
   P->if_notify = radv_if_notify;
   P->ifa_notify = radv_ifa_notify;

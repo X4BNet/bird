@@ -43,7 +43,7 @@ rt_show_rte(struct cli *c, byte *ia, struct rte *e, struct rte_storage *er, stru
   byte from[IPA_MAX_TEXT_LENGTH+8];
   byte tm[TM_DATETIME_BUFFER_SIZE], info[256];
   rta *a = e->attrs;
-  int sync_error = d->kernel ? krt_get_sync_error(d->kernel, er->id) : 0;
+  int sync_error = d->kernel ? krt_get_sync_error(d->kernel, d->kernel_export_hook, er->id) : 0;
   void (*get_route_info)(struct rte *, struct rte_storage *, byte *);
   struct nexthop *nh;
 
@@ -129,12 +129,12 @@ rt_show_net(struct cli *c, net *n, struct rt_show_data *d)
       struct rte e = rte_copy(er);
 
       /* Export channel is down, do not try to export routes to it */
-      if (ec && (atomic_load_explicit(&ec->export_state, memory_order_acquire) == ES_DOWN))
+      if (ec && !ec->out.hook)
 	goto skip;
 
       if (d->export_mode == RSEM_EXPORTED)
         {
-	  if (!bmap_test(&ec->export_map, er->id))
+	  if (!bmap_test(&ec->out.hook->accept_map, er->id))
 	    goto skip;
 
 	  // if (ec->ra_mode != RA_ANY)
@@ -142,10 +142,9 @@ rt_show_net(struct cli *c, net *n, struct rt_show_data *d)
         }
       else if (d->export_mode && (ec->out_table != d->tab->table))
 	{
-	  struct proto *ep = ec->proto;
-	  int ic = ep->preexport ? ep->preexport(ec, &e) : 0;
+	  int ic = ec->out.preexport ? ec->out.preexport(&ec->out, &e) : 0;
 
-	  if (ec->ra_mode == RA_OPTIMAL || ec->ra_mode == RA_MERGED)
+	  if (ec->out.ra_mode == RA_OPTIMAL || ec->out.ra_mode == RA_MERGED)
 	    pass = 1;
 
 	  if (ic < 0)
@@ -159,12 +158,12 @@ rt_show_net(struct cli *c, net *n, struct rt_show_data *d)
 	       * command may change the export filter and do not update routes.
 	       */
 	      int do_export = (ic > 0) ||
-		(f_run(ec->out_filter, &e, c->show_pool, FF_SILENT) <= F_ACCEPT);
+		(f_run(ec->out.filter, &e, c->show_pool, FF_SILENT) <= F_ACCEPT);
 
 	      if (do_export != (d->export_mode == RSEM_EXPORT))
 		goto skip;
 
-	      if ((d->export_mode == RSEM_EXPORT) && (ec->ra_mode == RA_ACCEPTED))
+	      if ((d->export_mode == RSEM_EXPORT) && (ec->out.ra_mode == RA_ACCEPTED))
 		pass = 1;
 	    }
 	}
@@ -242,6 +241,7 @@ rt_show_cont(struct cli *c)
     d->table_open = 1;
     d->table_counter++;
     d->kernel = rt_show_get_kernel(d);
+    d->kernel_export_hook = d->kernel ? d->kernel->p.main_channel->out.hook : NULL;
 
     d->show_counter_last = d->show_counter;
     d->rt_counter_last   = d->rt_counter;
@@ -325,7 +325,7 @@ rt_show_get_default_tables(struct rt_show_data *d)
   {
     WALK_LIST(c, d->export_protocol->channels)
     {
-      if (atomic_load_explicit(&c->export_state, memory_order_acquire) == ES_DOWN)
+      if (!c->out.hook)
 	continue;
 
       tab = rt_show_add_table(d, c->table);
@@ -376,7 +376,7 @@ rt_show_prepare_tables(struct rt_show_data *d)
 	continue;
       }
 
-      if ((d->export_mode == RSEM_EXPORT) && (tab->export_channel->ra_mode == RA_MERGED))
+      if ((d->export_mode == RSEM_EXPORT) && (tab->export_channel->out.ra_mode == RA_MERGED))
       {
 	ASSERT_DIE(tab->export_channel->out_table);
 	tab->table = tab->export_channel->out_table;

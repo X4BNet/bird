@@ -1300,7 +1300,7 @@ find_surrogate_fwaddr(struct ospf_proto *p, struct ospf_area *oa)
 }
 
 void
-ospf_rt_notify(struct proto *P, struct channel *ch UNUSED, linpool *lp UNUSED, const net_addr *n, rte *new, const struct rte_storage *old UNUSED)
+ospf_rt_notify(struct proto *P, struct channel *ch UNUSED, linpool *lp UNUSED, const net_addr *n, rte *new, rte *old UNUSED)
 {
   struct ospf_proto *p = (struct ospf_proto *) P;
   struct ospf_area *oa = NULL;	/* non-NULL for NSSA-LSA */

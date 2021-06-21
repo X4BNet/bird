@@ -107,7 +107,7 @@
 #include <stdlib.h>
 #include "ospf.h"
 
-static int ospf_preexport(struct channel *c, rte *new);
+static int ospf_preexport(struct rt_export_request *req, rte *new);
 static void ospf_reload_routes(struct channel *C);
 static int ospf_rte_better(struct rte_storage *new, struct rte_storage *old);
 static void ospf_disp(timer *timer);
@@ -367,11 +367,11 @@ ospf_init(struct proto_config *CF)
   struct proto *P = proto_new(CF);
 
   P->main_channel = proto_add_channel(P, proto_cf_main_channel(CF));
+  P->main_channel->out.preexport = ospf_preexport;
 
   P->rt_notify = ospf_rt_notify;
   P->if_notify = ospf_if_notify;
   P->ifa_notify = cf->ospf2 ? ospf_ifa_notify2 : ospf_ifa_notify3;
-  P->preexport = ospf_preexport;
   P->reload_routes = ospf_reload_routes;
   P->feed_begin = ospf_feed_begin;
   P->feed_end = ospf_feed_end;
@@ -475,8 +475,9 @@ ospf_disp(timer * timer)
  * import to the filters.
  */
 static int
-ospf_preexport(struct channel *c, rte *e)
+ospf_preexport(struct rt_export_request *req, rte *e)
 {
+  struct channel *c = SKIP_BACK(struct channel, out, req);
   struct ospf_proto *p = (struct ospf_proto *) (c->proto);
   struct ospf_area *oa = ospf_main_area(p);
 

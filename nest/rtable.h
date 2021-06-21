@@ -25,6 +25,7 @@ struct ea_list;
 struct protocol;
 struct proto;
 struct rte_src;
+struct rte_storage;
 struct symbol;
 struct timer;
 struct filter;
@@ -172,9 +173,11 @@ typedef struct rtable_private {
   pool *rp;				/* Resource pool to allocate everything from, including itself */
   struct fib fib;
   slab *rte_slab;			/* Slab for allocating routes */
-  list channels;			/* List of attached channels (struct channel) */
   int use_count;			/* Number of channels and others using this table */
   u32 rt_count;				/* Number of routes in the table */
+
+  list imports;				/* Registered route importers */
+  list exports;				/* Registered route exporters */
 
   struct hmap id_map;
   struct hostcache *hostcache;
@@ -219,6 +222,183 @@ typedef union {
 #define RT_LOCK(tab) (RT_INT(tab) ? LOCK_DOMAIN(rtable_internal, (tab)->idom) : LOCK_DOMAIN(rtable, (tab)->dom))
 #define RT_UNLOCK(tab) (RT_INT(tab) ? UNLOCK_DOMAIN(rtable_internal, (tab)->idom) : UNLOCK_DOMAIN(rtable, (tab)->dom))
 
+/*
+ * Channel limits
+ */
+
+#define PLD_RX		0	/* Receive limit */
+#define PLD_IN		1	/* Import limit */
+#define PLD_OUT		2	/* Export limit */
+#define PLD_MAX		3
+
+#define PLA_NONE	0	/* No limit */
+#define PLA_WARN	1	/* Issue log warning */
+#define PLA_BLOCK	2	/* Block new routes */
+#define PLA_RESTART	4	/* Force protocol restart */
+#define PLA_DISABLE	5	/* Shutdown and disable protocol */
+
+#define PLS_INITIAL	0	/* Initial limit state after protocol start */
+#define PLS_ACTIVE	1	/* Limit was hit */
+#define PLS_BLOCKED	2	/* Limit is active and blocking new routes */
+
+struct channel_limit {
+  u32 limit;			/* Maximum number of prefixes */
+  u8 action;			/* Action to take (PLA_*) */
+  u8 state;			/* State of limit (PLS_*) */
+};
+
+struct channel;
+void channel_notify_limit(struct channel *c, struct channel_limit *l, int dir, u32 rt_count);
+
+static inline void
+channel_reset_limit(struct channel_limit *l)
+{
+  if (l->action)
+    l->state = PLS_INITIAL;
+}
+
+/* Table-channel connections */
+
+struct rt_import_request {
+  struct rt_import_hook *hook;		/* The table part of importer */
+
+  const struct filter *filter;
+
+  u8 keep_filtered;			/* Routes rejected in import filter are kept */
+  u8 reloadable;			/* Hook reload_routes() is allowed on the channel */
+  u8 apply_rx_limit;			/* Apply rx limit */
+
+  struct channel_limit rx_limit;	/* Receive limit (for in_keep_filtered) */
+  struct channel_limit in_limit;	/* Input limit */
+
+  void (*notify_limit)(struct rt_import_request *req, struct channel_limit *l, int dir, u32 rt_count);
+  void (*rte_trace)(uint flag, struct rt_import_request *req, rte *e, const char *msg);
+  void (*dump_req)(struct rt_import_request *req);
+  void (*log_state_change)(struct rt_import_request *req, u8 state);
+  void (*rte_invalid)(struct rt_import_request *req, const char *msg, ...);
+  struct rta *(*rte_modify)(struct rte_storage *, struct linpool *);
+};
+
+struct rt_import_hook {
+  node n;
+  rtable *table;			/* The connected table */
+  struct rt_import_request *req;	/* The requestor */
+
+  struct import_stats {
+    /* Import - from protocol to core */
+    u32 routes;				/* Number of routes successfully imported to the (adjacent) routing table */
+    u32 filtered;			/* Number of routes rejected in import filter but kept in the routing table */
+    u32 pref;				/* Number of routes selected as best in the (adjacent) routing table */
+    u32 updates_received;		/* Number of route updates received */
+    u32 updates_limited_rx;		/* Number of route updates exceeding the rx_limit */
+    u32 updates_invalid;		/* Number of route updates rejected as invalid */
+    u32 updates_filtered;		/* Number of route updates rejected by filters */
+    u32 updates_ignored;		/* Number of route updates rejected as already in route table */
+    u32 updates_accepted;		/* Number of route updates accepted and imported */
+    u32 updates_limited_in;		/* Number of route updates exceeding the in_limit */
+    u32 withdraws_received;		/* Number of route withdraws received */
+    u32 withdraws_invalid;		/* Number of route withdraws rejected as invalid */
+    u32 withdraws_ignored;		/* Number of route withdraws rejected as already not in route table */
+    u32 withdraws_accepted;		/* Number of route withdraws accepted and processed */
+  } stats;
+
+  u64 flush_seq;			/* Table export seq when the channel announced flushing */
+  btime last_state_change;		/* Time of last state transition */
+
+  u8 import_state;			/* IS_* */
+
+  void (*stopped)(struct rt_import_request *);	/* Stored callback when import is stopped */
+};
+
+struct rt_export_request {
+  struct rt_export_hook *hook;		/* Table part of the export */
+
+  const struct filter *filter;
+
+  struct channel_limit out_limit;	/* Output limit */
+
+  u8 ra_mode;				/* Mode of received route advertisements (RA_*) */
+  u8 merge_limit;			/* Maximal number of nexthops for RA_MERGED */
+  u8 refeeding;				/* We are refeeding */
+  u8 explicit_flush;			/* Feed by withdrawals on export reset */
+
+  int (*preexport)(struct rt_export_request *req, struct rte *e);
+  void (*export)(struct rt_export_request *req, linpool *, const net_addr *net, rte *new, rte *old, int refeed);
+
+  void (*feed_begin)(struct rt_export_request *req);
+  void (*feed_end)(struct rt_export_request *req);
+
+  void (*rte_trace)(uint flag, struct rt_export_request *req, rte *e, const char *msg);
+  void (*log_state_change)(struct rt_export_request *req, u8);
+  void (*dump_req)(struct rt_export_request *req);
+};
+
+struct rt_export_hook {
+  node n;
+  rtable *table;			/* The connected table */
+
+  pool *pool;
+
+  struct rt_export_request *req;	/* The requestor */
+
+  struct export_stats {
+    /* Export - from core to protocol */
+    u32 routes;				/* Number of routes successfully exported to the protocol */
+    u32 updates_received;		/* Number of route updates received */
+    u32 updates_rejected;		/* Number of route updates rejected by protocol */
+    u32 updates_filtered;		/* Number of route updates rejected by filters */
+    u32 updates_limited;		/* Number of route updates rejected by limits */
+    u32 updates_accepted;		/* Number of route updates accepted and exported */
+    u32 withdraws_received;		/* Number of route withdraws received */
+    u32 withdraws_accepted;		/* Number of route withdraws accepted and processed */
+  } stats;
+
+  struct bmap accept_map;		/* Keeps track which routes were really exported */
+  struct bmap reject_map;		/* Keeps track which routes were rejected by export filter */
+
+  struct fib_iterator feed_fit;		/* Routing table iterator used during feeding */
+
+  struct coroutine *coro;		/* Exporter and feeder coroutine */
+  struct bsem *sem;			/* Exporter and feeder semaphore */
+  struct bmap seen_map;			/* Keep track which exports were already procesed */
+  struct rt_pending_export * _Atomic last_export;/* Last export processed */
+
+  btime last_state_change;		/* Time of last state transition */
+
+  u8 refeed_pending;			/* Refeeding and another refeed is scheduled */
+  u8 export_state;			/* Route export state (TES_*, see below) */
+
+  void (*stopped)(struct rt_export_request *);	/* Stored callback when export is stopped */
+};
+
+void rt_request_import(rtable *tab, struct rt_import_request *req);
+void rt_request_export(rtable *tab, struct rt_export_request *req);
+
+void rt_stop_import(struct rt_import_request *, void (*stopped)(struct rt_import_request *));
+void rt_stop_export(struct rt_export_request *, void (*stopped)(struct rt_export_request *));
+
+const char *rt_import_state_name(u8 state);
+const char *rt_export_state_name(u8 state);
+
+u8 rt_import_get_state(struct rt_import_hook *);
+u8 rt_export_get_state(struct rt_export_hook *);
+
+void rte_import(struct rt_import_request *req, rte *new, linpool *lp);
+
+#define TIS_DOWN	0
+#define TIS_UP		1
+#define TIS_STOP	2
+#define TIS_FLUSHING	3
+#define TIS_WAITING	4
+#define TIS_CLEARED	5
+#define TIS_MAX		6
+
+#define TES_DOWN	0
+#define TES_HUNGRY	1
+#define TES_FEEDING	2
+#define TES_READY	3
+#define TES_STOP	4
+#define TES_MAX		5
 
 struct rtable_config {
   node n;
@@ -287,7 +467,7 @@ struct rte_storage {
   struct rte_storage *next;		/* Next in chain */
   net *net;				/* Network this RTE belongs to */
   struct rte_src *src;			/* Route source that created the route */
-  struct channel *sender;		/* Channel used to send the route to the routing table */
+  struct rt_import_hook *sender;	/* Channel used to send the route to the routing table */
   struct rta *attrs;			/* Attributes of this route */
   u32 id;				/* Table specific route id */
   byte flags;				/* Flags (REF_...) */
@@ -320,6 +500,8 @@ static inline int rte_is_filtered(const struct rte_storage *r) { return !!(r->fl
 #define RIC_PROCESS	0		/* Process it through import filter */
 #define RIC_REJECT	-1		/* Rejected by protocol */
 #define RIC_DROP	-2		/* Silently dropped by protocol */
+
+#define rte_update  channel_rte_import
 
 /**
  * rte_update - enter a new update to a routing table
@@ -383,9 +565,9 @@ static inline net *net_get(rtable_private *tab, const net_addr *addr) { return (
 void *net_route(rtable_private *tab, const net_addr *n);
 int net_roa_check(rtable_private *tab, const net_addr *n, u32 asn);
 struct rte_storage *rte_find(net *net, struct rte_src *src);
-void rt_refresh_begin(rtable *t, struct channel *c);
-void rt_refresh_end(rtable *t, struct channel *c);
-void rt_modify_stale(rtable *t, struct channel *c);
+void rt_refresh_begin(rtable *t, struct rt_import_request *);
+void rt_refresh_end(rtable *t, struct rt_import_request *);
+void rt_modify_stale(rtable *t, struct rt_import_request *);
 void rt_schedule_prune(rtable_private *t);
 void channel_export_coro(void *);
 void rte_dump(struct rte_storage *);
@@ -396,6 +578,8 @@ static inline rte rte_copy(const struct rte_storage *r)
 { return (rte) { .attrs = r->attrs, .net = r->net->n.addr, .src = r->src, .id = r->id, .sender = r->sender, .generation = r->generation, }; }
 void rt_dump(rtable *);
 void rt_dump_all(void);
+void rt_dump_hooks(rtable *);
+void rt_dump_hooks_all(void);
 int rt_feed_channel(struct channel *c);
 void rt_feed_channel_abort(struct channel *c);
 int rt_reload_channel(struct channel *c, linpool *lp);
@@ -404,7 +588,8 @@ void rt_refeed_channel(struct channel *c, struct bmap *seen, linpool *lp);
 void rt_refeed_channel_net(struct channel *c, linpool *lp, const net_addr *n);
 void rt_flush_channel(struct channel *c, linpool *lp);
 void rt_prune_sync(rtable *t, int all);
-int rte_update_out(struct channel *c, linpool *lp, rte *new, struct rte_storage *old, struct rte_storage **old_stored);
+int rte_update_out(struct channel *c, linpool *lp, rte *new, rte *old, struct rte_storage **old_stored);
+int rte_update_in(struct channel *c, rte *new);
 struct rtable_config *rt_new_table(struct symbol *s, uint addr_type);
 
 /* Default limit for ECMP next hops, defined in sysdep code */
@@ -430,6 +615,7 @@ struct rt_show_data {
   struct channel *export_channel;
   struct config *running_on_config;
   struct krt_proto *kernel;
+  struct rt_export_hook *kernel_export_hook;
   int export_mode, primary_only, filtered, stats, show_for;
 
   int table_open;			/* Iteration (fit) is open */

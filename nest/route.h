@@ -32,7 +32,7 @@ typedef struct rte {
   struct rta *attrs;			/* Attributes of this route */
   const net_addr *net;			/* Network this RTE belongs to */
   struct rte_src *src;			/* Route source that created the route */
-  struct channel *sender;		/* Channel used to send the route to the routing table */
+  struct rt_import_hook *sender;	/* Import hook used to send the route to the routing table */
   u32 id;				/* Table specific route id */
   u8 generation;			/* If this route import is based on other previously exported route,
 					   this value should be 1 + MAX(generation of the parent routes).

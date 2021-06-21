@@ -85,10 +85,11 @@ void krt_got_route(struct krt_proto *p, struct rte *e, s8 src);
 void krt_got_route_async(struct krt_proto *p, struct rte *e, int new, s8 src);
 
 static inline int
-krt_get_sync_error(struct krt_proto *p, u32 id)
+krt_get_sync_error(struct krt_proto *p, struct rt_export_hook *e, u32 id)
 {
+  /* Beware, this function must be called with both the_bird and table properly locked */
   return (p->p.proto_state == PS_UP) &&
-    bmap_test(&p->p.main_channel->export_map, id) &&
+    bmap_test(&e->accept_map, id) &&
     !bmap_test(&p->sync_map, id);
 }
 
