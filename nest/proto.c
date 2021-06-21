@@ -17,7 +17,7 @@
 #include "lib/string.h"
 #include "lib/coro.h"
 #include "conf/conf.h"
-#include "nest/route.h"
+#include "nest/rtable.h"
 #include "nest/iface.h"
 #include "nest/cli.h"
 #include "filter/filter.h"

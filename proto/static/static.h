@@ -9,7 +9,7 @@
 #ifndef _BIRD_STATIC_H_
 #define _BIRD_STATIC_H_
 
-#include "nest/route.h"
+#include "nest/rtable.h"
 #include "nest/bfd.h"
 #include "lib/buffer.h"
 

@@ -31,7 +31,7 @@
 #undef LOCAL_DEBUG
 
 #include "nest/bird.h"
-#include "nest/route.h"
+#include "nest/rtable.h"
 #include "nest/protocol.h"
 #include "nest/iface.h"
 #include "lib/resource.h"
@@ -3803,7 +3803,7 @@ rt_get_hostentry(rtable_private *tab, ip_addr a, ip_addr ll, rtable *dep)
 
 
 /*
- *  Documentation for functions declared inline in route.h
+ *  Documentation for functions declared inline in rtable.h
  */
 #if 0
 

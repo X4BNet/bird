@@ -47,7 +47,7 @@
 #undef LOCAL_DEBUG
 
 #include "nest/bird.h"
-#include "nest/route.h"
+#include "nest/rtable.h"
 #include "nest/protocol.h"
 #include "nest/iface.h"
 #include "nest/cli.h"
@@ -1390,7 +1390,7 @@ rta_init(void)
 }
 
 /*
- *  Documentation for functions declared inline in route.h
+ *  Documentation for functions declared inline in rtable.h
  */
 #if 0
 
