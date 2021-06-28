@@ -288,6 +288,8 @@ die(const char *msg, ...)
   exit(1);
 }
 
+static struct timespec dbg_time_start;
+
 /**
  * debug - write to debug output
  * @msg: a printf-like message
@@ -300,12 +302,33 @@ debug(const char *msg, ...)
 {
 #define MAX_DEBUG_BUFSIZE 16384
   va_list args;
-  char buf[MAX_DEBUG_BUFSIZE];
+  char buf[MAX_DEBUG_BUFSIZE], *pos = buf;
+  int max = MAX_DEBUG_BUFSIZE;
 
   va_start(args, msg);
   if (dbgf)
     {
-      if (bvsnprintf(buf, MAX_DEBUG_BUFSIZE, msg, args) < 0)
+      struct timespec dbg_time;
+      clock_gettime(CLOCK_MONOTONIC, &dbg_time);
+      uint nsec;
+      uint sec;
+
+      if (dbg_time.tv_nsec > dbg_time_start.tv_nsec)
+      {
+	nsec = dbg_time.tv_nsec - dbg_time_start.tv_nsec;
+	sec = dbg_time.tv_sec - dbg_time_start.tv_sec;
+      }
+      else
+      {
+	nsec = 1000000000 + dbg_time.tv_nsec - dbg_time_start.tv_nsec;
+	sec = dbg_time.tv_sec - dbg_time_start.tv_sec - 1;
+      }
+
+      int n = bsnprintf(pos, max, "%u.%09u: ", sec, nsec);
+      pos += n;
+      max -= n;
+
+      if (bvsnprintf(pos, max, msg, args) < 0)
 	bug("Extremely long debug output, split it.");
 
       fputs(buf, dbgf);
@@ -411,6 +434,8 @@ done:
 void
 log_init_debug(char *f)
 {
+  clock_gettime(CLOCK_MONOTONIC, &dbg_time_start);
+
   if (dbgf && dbgf != stderr)
     fclose(dbgf);
   if (!f)
