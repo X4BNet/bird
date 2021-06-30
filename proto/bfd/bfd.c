@@ -419,7 +419,7 @@ bfd_get_free_id(struct bfd_proto *p)
 static struct bfd_session *
 bfd_add_session(struct bfd_proto *p, ip_addr addr, ip_addr local, struct iface *iface, struct bfd_options *opts)
 {
-  birdloop_enter(p->loop);
+  birdloop_enter(p->p.loop);
 
   struct bfd_iface *ifa = bfd_get_iface(p, local, iface);
 
@@ -454,7 +454,7 @@ bfd_add_session(struct bfd_proto *p, ip_addr addr, ip_addr local, struct iface *
 
   TRACE(D_EVENTS, "Session to %I added", s->addr);
 
-  birdloop_leave(p->loop);
+  birdloop_leave(p->p.loop);
 
   return s;
 }
@@ -463,26 +463,26 @@ bfd_add_session(struct bfd_proto *p, ip_addr addr, ip_addr local, struct iface *
 static void
 bfd_open_session(struct bfd_proto *p, struct bfd_session *s, ip_addr local, struct iface *ifa)
 {
-  birdloop_enter(p->loop);
+  birdloop_enter(p->p.loop);
 
   s->opened = 1;
 
   bfd_session_control_tx_timer(s);
 
-  birdloop_leave(p->loop);
+  birdloop_leave(p->p.loop);
 }
 
 static void
 bfd_close_session(struct bfd_proto *p, struct bfd_session *s)
 {
-  birdloop_enter(p->loop);
+  birdloop_enter(p->p.loop);
 
   s->opened = 0;
 
   bfd_session_update_state(s, BFD_STATE_DOWN, BFD_DIAG_PATH_DOWN);
   bfd_session_control_tx_timer(s);
 
-  birdloop_leave(p->loop);
+  birdloop_leave(p->p.loop);
 }
 */
 
@@ -493,7 +493,7 @@ bfd_remove_session(struct bfd_proto *p, struct bfd_session *s)
 
   /* Caller should ensure that request list is empty */
 
-  birdloop_enter(p->loop);
+  birdloop_enter(p->p.loop);
 
   /* Remove session from notify list if scheduled for notification */
   /* No need for bfd_lock_sessions(), we are already protected by birdloop_enter() */
@@ -512,7 +512,7 @@ bfd_remove_session(struct bfd_proto *p, struct bfd_session *s)
 
   TRACE(D_EVENTS, "Session to %I removed", ip);
 
-  birdloop_leave(p->loop);
+  birdloop_leave(p->p.loop);
 }
 
 static void
@@ -521,7 +521,7 @@ bfd_reconfigure_session(struct bfd_proto *p, struct bfd_session *s)
   if (EMPTY_LIST(s->request_list))
     return;
 
-  birdloop_enter(p->loop);
+  birdloop_enter(p->p.loop);
 
   struct bfd_request *req = SKIP_BACK(struct bfd_request, n, HEAD(s->request_list));
   s->cf = bfd_merge_options(s->ifa->cf, &req->opts);
@@ -534,7 +534,7 @@ bfd_reconfigure_session(struct bfd_proto *p, struct bfd_session *s)
 
   bfd_session_control_tx_timer(s, 0);
 
-  birdloop_leave(p->loop);
+  birdloop_leave(p->p.loop);
 
   TRACE(D_EVENTS, "Session to %I reconfigured", s->addr);
 }
@@ -618,9 +618,9 @@ bfd_reconfigure_iface(struct bfd_proto *p, struct bfd_iface *ifa, struct bfd_con
     (new->passive != old->passive);
 
   /* This should be probably changed to not access ifa->cf from the BFD thread */
-  birdloop_enter(p->loop);
+  birdloop_enter(p->p.loop);
   ifa->cf = new;
-  birdloop_leave(p->loop);
+  birdloop_leave(p->p.loop);
 }
 
 
@@ -1027,10 +1027,10 @@ bfd_start(struct proto *P)
   pthread_spin_init(&p->lock, PTHREAD_PROCESS_PRIVATE);
 
   p->tpool = rp_new(P->pool, "BFD loop pool");
-  p->loop = birdloop_new(P->pool, p->domain.bfd_io);
+  p->p.loop = birdloop_new(P->pool, p->domain.bfd_io);
   p->p.active_coroutines++;
 
-  birdloop_enter_locked(p->loop);
+  birdloop_enter_locked(p->p.loop);
 
   p->session_slab = sl_new(P->pool, sizeof(struct bfd_session));
   HASH_INIT(p->session_hash_id, P->pool, 8);
@@ -1055,7 +1055,7 @@ bfd_start(struct proto *P)
   if (cf->accept_ipv6 && cf->accept_multihop)
     p->rx6_m = bfd_open_rx_sk(p, 1, SK_IPV6);
 
-  birdloop_leave(p->loop);
+  birdloop_leave(p->p.loop);
 
   bfd_take_requests(p);
 
@@ -1073,12 +1073,12 @@ bfd_loop_stopped(void *_p)
 
   struct bfd_proto *p = _p;
 
-  birdloop_enter(p->loop);
+  birdloop_enter(p->p.loop);
   rfree(p->tpool);
-  birdloop_leave(p->loop);
+  birdloop_leave(p->p.loop);
 
-  birdloop_free(p->loop);
-  p->loop = NULL;
+  birdloop_free(p->p.loop);
+  p->p.loop = &main_birdloop;
 
   p->p.active_coroutines--;
   proto_check_stopped(&p->p);
@@ -1092,7 +1092,7 @@ bfd_shutdown(struct proto *P)
   struct bfd_proto *p = (struct bfd_proto *) P;
   struct bfd_config *cf = (struct bfd_config *) (p->p.cf);
 
-  birdloop_enter(p->loop);
+  birdloop_enter(p->p.loop);
 
   rem_node(&p->bfd_node);
 
@@ -1102,9 +1102,9 @@ bfd_shutdown(struct proto *P)
 
   bfd_drop_requests(p);
 
-  birdloop_leave(p->loop);
+  birdloop_leave(p->p.loop);
 
-  birdloop_stop(p->loop, bfd_loop_stopped, p);
+  birdloop_stop(p->p.loop, bfd_loop_stopped, p);
 }
 
 static int
@@ -1122,7 +1122,7 @@ bfd_reconfigure(struct proto *P, struct proto_config *c)
       (new->accept_multihop != old->accept_multihop))
     return 0;
 
-  birdloop_mask_wakeups(p->loop);
+  birdloop_mask_wakeups(p->p.loop);
 
   WALK_LIST(ifa, p->iface_list)
     bfd_reconfigure_iface(p, ifa, new);
@@ -1136,7 +1136,7 @@ bfd_reconfigure(struct proto *P, struct proto_config *c)
 
   bfd_reconfigure_neighbors(p, new);
 
-  birdloop_unmask_wakeups(p->loop);
+  birdloop_unmask_wakeups(p->p.loop);
 
   return 1;
 }

@@ -93,7 +93,6 @@ struct bfd_proto
   DOMAIN(bfd_io) domain;
   pthread_spinlock_t lock;
 
-  struct birdloop *loop;
   pool *tpool;
 
   node bfd_node;
