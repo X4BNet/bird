@@ -687,25 +687,25 @@ bgp_fire_tx(struct bgp_conn *conn)
   buf = sk->tbuf;
   pkt = buf + BGP_HEADER_LENGTH;
 
-  if (s & (1 << PKT_SCHEDULE_CLOSE))
-    {
-      /* We can finally close connection and enter idle state */
-      bgp_conn_enter_idle_state(conn);
-      return 0;
-    }
-  if (s & (1 << PKT_NOTIFICATION))
-    {
-      s = 1 << PKT_SCHEDULE_CLOSE;
-      type = PKT_NOTIFICATION;
-      end = bgp_create_notification(conn, pkt);
-    }
-  else if (s & (1 << PKT_KEEPALIVE))
+  if (s & (1 << PKT_KEEPALIVE))
     {
       s &= ~(1 << PKT_KEEPALIVE);
       type = PKT_KEEPALIVE;
       end = pkt;			/* Keepalives carry no data */
       BGP_TRACE(D_PACKETS, "Sending KEEPALIVE");
       bgp_start_timer(conn->keepalive_timer, conn->keepalive_time);
+    }
+  else if (s & (1 << PKT_SCHEDULE_CLOSE))
+    {
+      /* We can finally close connection and enter idle state */
+      bgp_conn_enter_idle_state(conn);
+      return 0;
+    }
+  else if (s & (1 << PKT_NOTIFICATION))
+    {
+      s = 1 << PKT_SCHEDULE_CLOSE;
+      type = PKT_NOTIFICATION;
+      end = bgp_create_notification(conn, pkt);
     }
   else if (s & (1 << PKT_OPEN))
     {

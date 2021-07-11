@@ -1300,7 +1300,18 @@ bgp_shutdown(struct proto *P)
       break;
 
     case PDC_CF_RESTART:
-      subcode = 6; // Errcode 6, 6 - other configuration change
+      subcode = -1; // Do not send NOTIFICATION, just close the connection
+      
+      // Ensure we sent a keepalive recently
+      bgp_schedule_packet(&p->outgoing_conn, PKT_KEEPALIVE);
+      bgp_schedule_packet(&p->incoming_conn, PKT_KEEPALIVE);
+      
+      if ((p->cf->gr_mode != BGP_GR_ABLE) &&
+        (p->cf->llgr_mode != BGP_LLGR_ABLE))
+        subcode = 6; // Errcode 6, 6 - other configuration change
+      else
+        p->p.gr_recovery = 1; // allow the graceful recovery that is comming
+
       break;
 
     case PDC_CMD_DISABLE:
