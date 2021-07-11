@@ -216,7 +216,7 @@ bgp_close(struct bgp_proto *p, int apply_md5)
  * it for all BGP timers.
  */
 void
-bgp_start_timer(timer *t, int value, int randomfactor)
+bgp_start_timer2(timer *t, int value, int randomfactor)
 {
   if (value)
     {
@@ -226,6 +226,21 @@ bgp_start_timer(timer *t, int value, int randomfactor)
     }
   else
     tm_stop(t);
+}
+
+
+
+/**
+ * bgp_start_timer - start a BGP timer
+ * @t: timer
+ * @value: time to fire (0 to disable the timer)
+ *
+ * This functions calls tm_start() on @t with time @value and the
+ * amount of randomization suggested by the BGP standard. Please use
+ * it for all BGP timers.
+ */
+void bgp_start_timer(struct timer *t, int value) {
+  bgp_start_timer2(t, value, 6);
 }
 
 /**
@@ -704,7 +719,7 @@ bgp_hold_timeout(timer *t)
      and perhaps just not processed BGP packets in time. */
 
   if (sk_rx_ready(conn->sk) > 0)
-    bgp_start_timer(conn->hold_timer, 10, 0);
+    bgp_start_timer2(conn->hold_timer, 10, 0);
   else if ((conn->state == BS_ESTABLISHED) && p->gr_ready && conn->peer_llgr_able)
   {
     BGP_TRACE(D_EVENTS, "Hold timer expired");

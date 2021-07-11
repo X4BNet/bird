@@ -1079,7 +1079,7 @@ bgp_rx_open(struct bgp_conn *conn, byte *pkt, uint len)
   DBG("BGP: Hold timer set to %d, keepalive to %d, AS to %d, ID to %x, AS4 session to %d\n", conn->hold_time, conn->keepalive_time, p->remote_as, p->remote_id, p->as4_session);
 
   bgp_schedule_packet(conn, PKT_KEEPALIVE);
-  bgp_start_timer(conn->hold_timer, conn->hold_time, 16);
+  bgp_start_timer2(conn->hold_timer, conn->hold_time, 16);
   bgp_conn_enter_openconfirm_state(conn);
 }
 
@@ -1425,7 +1425,7 @@ bgp_rx_update(struct bgp_conn *conn, byte *pkt, uint len)
 
   if (conn->state != BS_ESTABLISHED)
     { bgp_error(conn, 5, fsm_err_subcode[conn->state], NULL, 0); return; }
-  bgp_start_timer(conn->hold_timer, conn->hold_time, 16);
+  bgp_start_timer2(conn->hold_timer, conn->hold_time, 16);
 
   /* Find parts of the packet and check sizes */
   if (len < 23)
@@ -1657,7 +1657,7 @@ bgp_rx_keepalive(struct bgp_conn *conn)
   struct bgp_proto *p = conn->bgp;
 
   BGP_TRACE(D_PACKETS, "Got KEEPALIVE");
-  bgp_start_timer(conn->hold_timer, conn->hold_time, 16);
+  bgp_start_timer2(conn->hold_timer, conn->hold_time, 16);
   switch (conn->state)
     {
     case BS_OPENCONFIRM:
