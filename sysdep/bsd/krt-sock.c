@@ -33,6 +33,7 @@
 #include "lib/string.h"
 #include "lib/socket.h"
 
+extern list iface_list;
 const int rt_default_ecmp = 0;
 
 /*
@@ -241,6 +242,7 @@ krt_send_route(struct krt_proto *p, int cmd, rte *e)
    */
   if (!i)
   {
+    IFACE_LOCK;
     WALK_LIST(j, iface_list)
     {
       if (j->flags & IF_LOOPBACK)
@@ -249,6 +251,7 @@ krt_send_route(struct krt_proto *p, int cmd, rte *e)
         break;
       }
     }
+    IFACE_UNLOCK;
 
     if (!i)
     {
@@ -511,7 +514,10 @@ krt_read_route(struct ks_msg *msg, struct krt_proto *p, int scan)
   }
 #endif
 
+  IFACE_LOCK;
   a.nh.iface = if_find_by_index(msg->rtm.rtm_index);
+  IFACE_UNLOCK;
+
   if (!a.nh.iface)
     {
       log(L_ERR "KRT: Received route %N with unknown ifindex %u",
@@ -529,7 +535,7 @@ krt_read_route(struct ks_msg *msg, struct krt_proto *p, int scan)
     if (ipa_is_link_local(a.nh.gw))
       _I0(a.nh.gw) = 0xfe800000;
 
-    ng = neigh_find(&p->p, a.nh.gw, a.nh.iface, 0);
+    ng = neigh_find(&p->p.ifsub, a.nh.gw, a.nh.iface, 0);
     if (!ng || (ng->scope == SCOPE_HOST))
       {
 	/* Ignore routes with next-hop 127.0.0.1, host routes with such
@@ -577,7 +583,9 @@ krt_read_ifannounce(struct ks_msg *msg)
   }
   else if (ifam->ifan_what == IFAN_DEPARTURE)
   {
+    IFACE_LOCK;
     struct iface *iface = if_find_by_index(ifam->ifan_index);
+    IFACE_UNLOCK;
 
     /* Interface is destroyed */
     if (!iface)
@@ -628,7 +636,10 @@ krt_read_ifinfo(struct ks_msg *msg, int scan)
   /* Note that asynchronous IFINFO messages do not contain iface
      name, so we have to found an existing iface by iface index */
 
+  IFACE_LOCK;
   iface = if_find_by_index(ifm->ifm_index);
+  IFACE_UNLOCK;
+
   if (!iface)
   {
     /* New interface */
@@ -693,7 +704,11 @@ krt_read_addr(struct ks_msg *msg, int scan)
   if (ifam->ifam_index == 0)
     return;
 
-  if(!(iface = if_find_by_index(ifam->ifam_index)))
+  IFACE_LOCK;
+  iface = if_find_by_index(ifam->ifam_index);
+  IFACE_UNLOCK;
+
+  if(!iface)
   {
     log(L_ERR "KIF: Received address message for unknown interface %d", ifam->ifam_index);
     return;

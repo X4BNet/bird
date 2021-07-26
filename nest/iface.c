@@ -34,11 +34,27 @@
 #include "conf/conf.h"
 #include "sysdep/unix/krt.h"
 
+DOMAIN(iface) iface_domain;
+
 static pool *if_pool;
+static slab *if_notify_slab;
+static slab *ifa_notify_slab;
+static list if_subscription_list;
 
 list iface_list;
 
+void
+if_foreach(void (*callback)(struct iface *, void *), void *data)
+{
+  struct iface *i;
+  IFACE_LOCK;
+  WALK_LIST(i, iface_list)
+    callback(i, data);
+  IFACE_UNLOCK;
+}
+
 static void if_recalc_preferred(struct iface *i);
+static void ifa_delete_locked(struct ifa *a);
 
 /**
  * ifa_dump - dump interface address
@@ -49,6 +65,8 @@ static void if_recalc_preferred(struct iface *i);
 void
 ifa_dump(struct ifa *a)
 {
+  IFACE_ASSERT_LOCKED;
+
   debug("\t%I, net %N bc %I -> %I%s%s%s%s\n", a->ip, &a->prefix, a->brd, a->opposite,
 	(a->flags & IA_PRIMARY) ? " PRIMARY" : "",
 	(a->flags & IA_SECONDARY) ? " SEC" : "",
@@ -66,6 +84,8 @@ ifa_dump(struct ifa *a)
 void
 if_dump(struct iface *i)
 {
+  IFACE_ASSERT_LOCKED;
+
   struct ifa *a;
 
   debug("IF%d: %s", i->index, i->name);
@@ -109,10 +129,12 @@ if_dump_all(void)
 {
   struct iface *i;
 
+  IFACE_LOCK;
   debug("Known network interfaces:\n");
   WALK_LIST(i, iface_list)
     if_dump(i);
   debug("Router ID: %08x\n", config->router_id);
+  IFACE_UNLOCK;
 }
 
 static inline unsigned
@@ -142,30 +164,55 @@ if_copy(struct iface *to, struct iface *from)
   to->master = from->master;
 }
 
-static inline void
-ifa_send_notify(struct proto *p, unsigned c, struct ifa *a)
+struct ifa_notify {
+  struct if_subscription *s;
+  struct ifa *a;
+  unsigned c;
+  event e;
+};
+
+static void
+ifa_receive_notify(void *data)
 {
-  if (p->ifa_notify &&
-      (p->proto_state != PS_DOWN) &&
-      (!p->vrf_set || p->vrf == a->iface->master))
-    {
-      if (p->debug & D_IFACES)
-	log(L_TRACE "%s < address %N on interface %s %s",
-	    p->name, &a->prefix, a->iface->name,
-	    (c & IF_CHANGE_UP) ? "added" : "removed");
-      p->ifa_notify(p, c, a);
-    }
+  struct ifa_notify *ei = data;
+  struct if_subscription *s = ei->s;
+  unsigned c = ei->c;
+  struct ifa *a = ei->a;
+
+  IFACE_LOCK;
+  sl_free(ifa_notify_slab, data);
+  IFACE_UNLOCK;
+
+  s->ifa_notify(s, c, a);
+}
+
+static inline void
+ifa_send_notify(struct if_subscription *ifs, unsigned c, struct ifa *a)
+{
+  IFACE_ASSERT_LOCKED;
+  struct ifa_notify *ei = sl_alloc(ifa_notify_slab);
+  *ei = (struct ifa_notify) {
+    .s = ifs,
+    .c = c,
+    .a = a,
+    .e = {
+      .hook = ifa_receive_notify,
+      .data = ei,
+    },
+  };
+
+  ev_send(ifs->list, &ei->e);
 }
 
 static void
 ifa_notify_change_(unsigned c, struct ifa *a)
 {
-  struct proto *p;
+  struct if_subscription *s;
 
   DBG("IFA change notification (%x) for %s:%I\n", c, a->iface->name, a->ip);
 
-  WALK_LIST(p, proto_list)
-    ifa_send_notify(p, c, a);
+  WALK_LIST(s, if_subscription_list)
+    ifa_send_notify(s, c, a);
 }
 
 static inline void
@@ -180,30 +227,50 @@ ifa_notify_change(unsigned c, struct ifa *a)
     neigh_ifa_up(a);
 }
 
-static inline void
-if_send_notify(struct proto *p, unsigned c, struct iface *i)
+struct if_notify {
+  struct if_subscription *s;
+  struct iface *i;
+  unsigned c;
+  event e;
+};
+
+static void
+if_receive_notify(void *data)
 {
-  if (p->if_notify &&
-      (p->proto_state != PS_DOWN) &&
-      (!p->vrf_set || p->vrf == i->master))
-    {
-      if (p->debug & D_IFACES)
-	log(L_TRACE "%s < interface %s %s", p->name, i->name,
-	    (c & IF_CHANGE_UP) ? "goes up" :
-	    (c & IF_CHANGE_DOWN) ? "goes down" :
-	    (c & IF_CHANGE_MTU) ? "changes MTU" :
-	    (c & IF_CHANGE_LINK) ? "changes link" :
-	    (c & IF_CHANGE_PREFERRED) ? "changes preferred address" :
-	    (c & IF_CHANGE_CREATE) ? "created" :
-	    "sends unknown event");
-      p->if_notify(p, c, i);
-    }
+  struct if_notify *ei = data;
+  struct if_subscription *s = ei->s;
+  unsigned c = ei->c;
+  struct iface *i = ei->i;
+
+  IFACE_LOCK;
+  sl_free(if_notify_slab, data);
+  IFACE_UNLOCK;
+
+  s->if_notify(s, c, i);
+}
+
+static inline void
+if_send_notify(struct if_subscription *s, unsigned c, struct iface *i)
+{
+  IFACE_ASSERT_LOCKED;
+  struct if_notify *ei = sl_alloc(if_notify_slab);
+  *ei = (struct if_notify) {
+    .s = s,
+    .c = c,
+    .i = i,
+    .e = {
+      .hook = if_receive_notify,
+      .data = ei,
+    },
+  };
+  
+  ev_send(s->list, &ei->e);
 }
 
 static void
 if_notify_change(unsigned c, struct iface *i)
 {
-  struct proto *p;
+  struct if_subscription *s;
   struct ifa *a;
 
   if (i->flags & IF_JUST_CREATED)
@@ -224,8 +291,8 @@ if_notify_change(unsigned c, struct iface *i)
     WALK_LIST(a, i->addrs)
       ifa_notify_change_(IF_CHANGE_DOWN, a);
 
-  WALK_LIST(p, proto_list)
-    if_send_notify(p, c, i);
+  WALK_LIST(s, if_subscription_list)
+    if_send_notify(s, c, i);
 
   if (c & IF_CHANGE_UP)
     WALK_LIST(a, i->addrs)
@@ -298,6 +365,9 @@ if_delete(struct iface *old)
 struct iface *
 if_update(struct iface *new)
 {
+  ASSERT_THE_BIRD_LOCKED;
+  IFACE_LOCK;
+
   struct iface *i;
   unsigned c;
 
@@ -326,6 +396,7 @@ if_update(struct iface *new)
 	  if_notify_change(c, i);
 
 	i->flags |= IF_UPDATED;
+	IFACE_UNLOCK;
 	return i;
       }
   i = mb_alloc(if_pool, sizeof(struct iface));
@@ -335,12 +406,14 @@ newif:
   init_list(&i->neighbors);
   i->flags |= IF_UPDATED | IF_TMP_DOWN;		/* Tmp down as we don't have addresses yet */
   add_tail(&iface_list, &i->n);
+  IFACE_UNLOCK;
   return i;
 }
 
 void
 if_start_update(void)
 {
+  IFACE_LOCK;
   struct iface *i;
   struct ifa *a;
 
@@ -350,10 +423,11 @@ if_start_update(void)
       WALK_LIST(a, i->addrs)
 	a->flags &= ~IA_UPDATED;
     }
+  IFACE_UNLOCK;
 }
 
-void
-if_end_partial_update(struct iface *i)
+static void
+if_end_partial_update_locked(struct iface *i)
 {
   if (i->flags & IF_NEEDS_RECALC)
     if_recalc_preferred(i);
@@ -363,8 +437,20 @@ if_end_partial_update(struct iface *i)
 }
 
 void
+if_end_partial_update(struct iface *i)
+{
+  ASSERT_THE_BIRD_LOCKED;
+  IFACE_LOCK;
+  if_end_partial_update_locked(i);
+  IFACE_UNLOCK;
+}
+
+void
 if_end_update(void)
 {
+  ASSERT_THE_BIRD_LOCKED;
+  IFACE_LOCK;
+
   struct iface *i;
   struct ifa *a, *b;
 
@@ -376,10 +462,12 @@ if_end_update(void)
 	{
 	  WALK_LIST_DELSAFE(a, b, i->addrs)
 	    if (!(a->flags & IA_UPDATED))
-	      ifa_delete(a);
-	  if_end_partial_update(i);
+	      ifa_delete_locked(a);
+	  if_end_partial_update_locked(i);
 	}
     }
+
+  IFACE_UNLOCK;
 }
 
 void
@@ -399,21 +487,37 @@ if_flush_ifaces(struct proto *p)
  * of notifications about all existing interfaces.
  */
 void
-if_feed_baby(struct proto *p)
+if_subscribe(struct if_subscription *ifs)
 {
   struct iface *i;
   struct ifa *a;
 
-  if (!p->if_notify && !p->ifa_notify)	/* shortcut */
-    return;
-  DBG("Announcing interfaces to new protocol %s\n", p->name);
+  IFACE_LOCK;
   WALK_LIST(i, iface_list)
     {
-      if_send_notify(p, IF_CHANGE_CREATE | ((i->flags & IF_UP) ? IF_CHANGE_UP : 0), i);
+      if_send_notify(ifs, IF_CHANGE_CREATE | ((i->flags & IF_UP) ? IF_CHANGE_UP : 0), i);
       if (i->flags & IF_UP)
 	WALK_LIST(a, i->addrs)
-	  ifa_send_notify(p, IF_CHANGE_CREATE | IF_CHANGE_UP, a);
+	  ifa_send_notify(ifs, IF_CHANGE_CREATE | IF_CHANGE_UP, a);
     }
+
+  init_list(&ifs->neigh_list);
+  add_tail(&if_subscription_list, &ifs->n);
+
+  IFACE_UNLOCK;
+}
+
+void neigh_free_locked(neighbor *n);
+
+void
+if_unsubscribe(struct if_subscription *ifs)
+{
+  IFACE_LOCK;
+  rem_node(&ifs->n);
+  struct neighbor *n;
+  WALK_LIST_FIRST2(n, ifs_n, ifs->neigh_list)
+    neigh_free_locked(n);
+  IFACE_UNLOCK;
 }
 
 /**
@@ -427,6 +531,7 @@ if_feed_baby(struct proto *p)
 struct iface *
 if_find_by_index(unsigned idx)
 {
+  IFACE_ASSERT_LOCKED;
   struct iface *i;
 
   WALK_LIST(i, iface_list)
@@ -446,6 +551,7 @@ if_find_by_index(unsigned idx)
 struct iface *
 if_find_by_name(const char *name)
 {
+  IFACE_ASSERT_LOCKED;
   struct iface *i;
 
   WALK_LIST(i, iface_list)
@@ -457,6 +563,7 @@ if_find_by_name(const char *name)
 struct iface *
 if_get_by_name(const char *name)
 {
+  IFACE_ASSERT_LOCKED;
   struct iface *i;
 
   WALK_LIST(i, iface_list)
@@ -555,6 +662,7 @@ if_recalc_all_preferred_addresses(void)
 {
   struct iface *i;
 
+  IFACE_LOCK;
   WALK_LIST(i, iface_list)
   {
     if_recalc_preferred(i);
@@ -562,6 +670,7 @@ if_recalc_all_preferred_addresses(void)
     if (i->flags & IF_TMP_DOWN)
       if_change_flags(i, i->flags & ~IF_TMP_DOWN);
   }
+  IFACE_UNLOCK;
 }
 
 static inline int
@@ -582,6 +691,8 @@ ifa_same(struct ifa *a, struct ifa *b)
 struct ifa *
 ifa_update(struct ifa *a)
 {
+  IFACE_LOCK;
+
   struct iface *i = a->iface;
   struct ifa *b;
 
@@ -594,9 +705,10 @@ ifa_update(struct ifa *a)
 	    !((b->flags ^ a->flags) & IA_PEER))
 	  {
 	    b->flags |= IA_UPDATED;
+	    IFACE_UNLOCK;
 	    return b;
 	  }
-	ifa_delete(b);
+	ifa_delete_locked(b);
 	break;
       }
 
@@ -611,6 +723,7 @@ ifa_update(struct ifa *a)
   i->flags |= IF_NEEDS_RECALC;
   if (i->flags & IF_UP)
     ifa_notify_change(IF_CHANGE_CREATE | IF_CHANGE_UP, b);
+  IFACE_UNLOCK;
   return b;
 }
 
@@ -622,8 +735,8 @@ ifa_update(struct ifa *a)
  * interface. It's called by the platform dependent code during
  * the interface update process described under if_update().
  */
-void
-ifa_delete(struct ifa *a)
+static void
+ifa_delete_locked(struct ifa *a)
 {
   struct iface *i = a->iface;
   struct ifa *b;
@@ -656,9 +769,18 @@ ifa_delete(struct ifa *a)
       }
 }
 
+void
+ifa_delete(struct ifa *a)
+{
+  IFACE_LOCK;
+  ifa_delete_locked(a);
+  IFACE_UNLOCK;
+}
+
 u32
 if_choose_router_id(struct iface_patt *mask, u32 old_id)
 {
+  IFACE_LOCK;
   struct iface *i;
   struct ifa *a, *b;
 
@@ -691,12 +813,16 @@ if_choose_router_id(struct iface_patt *mask, u32 old_id)
     }
 
   if (!b)
+  {
+    IFACE_UNLOCK;
     return 0;
+  }
 
   u32 id = ipa_to_u32(b->ip);
   if (id != old_id)
     log(L_INFO "Chosen router ID %R according to interface %s", id, b->iface->name);
 
+  IFACE_UNLOCK;
   return id;
 }
 
@@ -710,7 +836,11 @@ void
 if_init(void)
 {
   if_pool = rp_new(&root_pool, "Interfaces");
+  if_notify_slab = sl_new(if_pool, sizeof(struct if_notify));
+  ifa_notify_slab = sl_new(if_pool, sizeof(struct ifa_notify));
   init_list(&iface_list);
+  init_list(&if_subscription_list);
+  iface_domain = DOMAIN_NEW(iface, "Interfaces");
   neigh_init(if_pool);
 }
 
@@ -833,6 +963,7 @@ if_show_addr(struct ifa *a)
 void
 if_show(void)
 {
+  IFACE_LOCK;
   struct iface *i;
   struct ifa *a;
   char *type;
@@ -872,11 +1003,13 @@ if_show(void)
 	  if_show_addr(a);
     }
   cli_msg(0, "");
+  IFACE_UNLOCK;
 }
 
 void
 if_show_summary(void)
 {
+  IFACE_LOCK;
   struct iface *i;
 
   cli_msg(-2005, "%-10s %-6s %-18s %s", "Interface", "State", "IPv4 address", "IPv6 address");
@@ -902,4 +1035,5 @@ if_show_summary(void)
 	      i->name, (i->flags & IF_UP) ? "up" : "down", a4, a6);
     }
   cli_msg(0, "");
+  IFACE_UNLOCK;
 }

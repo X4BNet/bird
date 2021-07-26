@@ -253,7 +253,7 @@ static_add_rte(struct static_proto *p, struct static_route *r)
 
     for (r2 = r; r2; r2 = r2->mp_next)
     {
-      n = neigh_find(&p->p, r2->via, r2->iface, NEF_STICKY |
+      n = neigh_find(&p->p.ifsub, r2->via, r2->iface, NEF_STICKY |
 		     (r2->onlink ? NEF_ONLINK : 0) |
 		     (ipa_zero(r2->via) ? NEF_IFACE : 0));
 
@@ -375,7 +375,7 @@ static_reconfigure_rte(struct static_proto *p, struct static_route *or, struct s
 static void
 static_neigh_notify(struct neighbor *n)
 {
-  struct static_proto *p = (void *) n->proto;
+  struct static_proto *p = (void *) SKIP_BACK(struct proto, ifsub, n->ifs);
   struct static_route *r;
 
   DBG("Static: neighbor notify for %I: iface %p\n", n->addr, n->iface);
@@ -392,7 +392,7 @@ static void
 static_bfd_notify(struct bfd_request *req)
 {
   struct static_route *r = req->data;
-  struct static_proto *p = (void *) r->neigh->proto;
+  struct static_proto *p = (void *) SKIP_BACK(struct proto, ifsub, r->neigh->ifs);
 
   // if (req->down) TRACE(D_EVENTS, "BFD session down for nbr %I on %s", XXXX);
 

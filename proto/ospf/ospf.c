@@ -1449,6 +1449,7 @@ ospf_sh_lsadb(struct lsadb_show_data *ld)
 
   qsort(hea, j, sizeof(struct top_hash_entry *), lsa_compare_for_lsadb);
 
+  IFACE_LOCK;
   for (i = 0; i < j; i++)
   {
     struct ospf_lsa_header *lsa = &(hea[i]->lsa);
@@ -1502,6 +1503,7 @@ ospf_sh_lsadb(struct lsadb_show_data *ld)
     cli_msg(-1017," %04x  %-15R %-15R  %08x %5u    %04x",
 	    lsa_type, lsa->id, lsa->rt, lsa->sn, lsa->age, lsa->checksum);
   }
+  IFACE_UNLOCK;
   cli_msg(0, "");
 }
 

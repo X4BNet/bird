@@ -262,7 +262,11 @@ sockaddr_read6(struct sockaddr_in6 *sa, ip_addr *a, struct iface **ifa, uint *po
   *a = ipa_from_in6(sa->sin6_addr);
 
   if (ifa && ipa_is_link_local(*a))
+  {
+    IFACE_LOCK;
     *ifa = if_find_by_index(sa->sin6_scope_id);
+    IFACE_UNLOCK;
+  }
 }
 
 int

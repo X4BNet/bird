@@ -148,8 +148,8 @@ bfd_multihop:
 
 bfd_neigh_iface:
    /* empty */ { $$ = NULL; }
- | '%' symbol { $$ = if_get_by_name($2->name); }
- | DEV text { $$ = if_get_by_name($2); }
+ | '%' symbol { IFACE_LOCK; $$ = if_get_by_name($2->name); IFACE_UNLOCK; }
+ | DEV text { IFACE_LOCK; $$ = if_get_by_name($2); IFACE_UNLOCK; }
  ;
 
 bfd_neigh_local:

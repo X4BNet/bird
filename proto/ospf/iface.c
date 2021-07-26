@@ -1218,17 +1218,14 @@ ospf_ifa_notify3(struct proto *P, uint flags, struct ifa *a)
   }
 }
 
-
 static void
-ospf_reconfigure_ifaces2(struct ospf_proto *p)
+ospf_reconfigure_ifaces2_one(struct iface *iface, void *data)
 {
-  struct iface *iface;
+  struct ospf_proto *p = data;
   struct ifa *a;
 
-  WALK_LIST(iface, iface_list)
-  {
     if (! (iface->flags & IF_UP))
-      continue;
+      return;
 
     WALK_LIST(a, iface->addrs)
     {
@@ -1262,19 +1259,23 @@ ospf_reconfigure_ifaces2(struct ospf_proto *p)
 	ospf_iface_new(s.oa, a, s.ip);
       }
     }
-  }
 }
 
 static void
-ospf_reconfigure_ifaces3(struct ospf_proto *p)
+ospf_reconfigure_ifaces2(struct ospf_proto *p)
 {
-  struct iface *iface;
+  if_foreach(ospf_reconfigure_ifaces2_one, p);
+}
+
+static void
+ospf_reconfigure_ifaces3_one(struct iface *iface, void *data)
+{
+  struct ospf_proto *p = data;
   struct ifa *a;
 
-  WALK_LIST(iface, iface_list)
   {
     if (! (iface->flags & IF_UP))
-      continue;
+      return;
 
     WALK_LIST(a, iface->addrs)
     {
@@ -1309,6 +1310,12 @@ ospf_reconfigure_ifaces3(struct ospf_proto *p)
       }
     }
   }
+}
+
+static void
+ospf_reconfigure_ifaces3(struct ospf_proto *p)
+{
+  if_foreach(ospf_reconfigure_ifaces3_one, p);
 }
 
 void

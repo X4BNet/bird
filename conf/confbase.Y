@@ -196,7 +196,7 @@ ipa:
 
 ipa_scope:
    /* empty */ { $$ = NULL; }
- | '%' symbol { $$ = if_get_by_name($2->name); }
+ | '%' symbol { IFACE_LOCK; $$ = if_get_by_name($2->name); IFACE_UNLOCK; }
  ;
 
 

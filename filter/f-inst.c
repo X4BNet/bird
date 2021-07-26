@@ -560,9 +560,12 @@
 
       case SA_GW:
 	{
+	  /* FIXME: Find a way how to cache neighbors in filters in a concurrent way */
+	  runtime("Gateway changing temporarily disabled"); 
+
 	  ip_addr ip = v1.val.ip;
 	  struct iface *ifa = ipa_is_link_local(ip) ? rta->nh.iface : NULL;
-	  neighbor *n = neigh_find(fs->rte->src->proto, ip, ifa, 0);
+	  neighbor *n = neigh_find(NULL, ip, ifa, 0);
 	  if (!n || (n->scope == SCOPE_HOST))
 	    runtime( "Invalid gw address" );
 
@@ -572,6 +575,8 @@
 	  rta->nh.next = NULL;
 	  rta->hostentry = NULL;
 	  rta->nh.labels = 0;
+
+	  neigh_free(n);
 	}
 	break;
 
@@ -596,7 +601,9 @@
 
       case SA_IFNAME:
 	{
+	  IFACE_LOCK;
 	  struct iface *ifa = if_find_by_name(v1.val.s);
+	  IFACE_UNLOCK;
 	  if (!ifa)
 	    runtime( "Invalid iface name" );
 

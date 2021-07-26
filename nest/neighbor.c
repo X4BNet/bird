@@ -50,9 +50,10 @@
 
 #include "nest/bird.h"
 #include "nest/iface.h"
-#include "nest/protocol.h"
 #include "lib/hash.h"
 #include "lib/resource.h"
+
+extern list iface_list;
 
 #define NEIGH_HASH_SIZE 256
 #define NEIGH_HASH_OFFSET 24
@@ -60,10 +61,13 @@
 static slab *neigh_slab;
 static list neigh_hash_table[NEIGH_HASH_SIZE], sticky_neigh_list;
 
+static inline void neigh_receive_notify(void *data);
+void neigh_free_locked(neighbor *n);
+
 static inline uint
-neigh_hash(struct proto *p, ip_addr a, struct iface *i)
+neigh_hash(struct if_subscription *s, ip_addr a, struct iface *i)
 {
-  return (p->hash_key ^ ipa_hash(a) ^ ptr_hash(i)) >> NEIGH_HASH_OFFSET;
+  return (s->hash_key ^ ipa_hash(a) ^ ptr_hash(i)) >> NEIGH_HASH_OFFSET;
 }
 
 static inline int
@@ -207,17 +211,17 @@ if_intersect(struct iface *ia, struct iface *ib)
  * connected directly or *@a is not a valid unicast IP address, neigh_find()
  * returns %NULL.
  */
-neighbor *
-neigh_find(struct proto *p, ip_addr a, struct iface *iface, uint flags)
+static neighbor *
+neigh_find_locked(struct if_subscription *s, ip_addr a, struct iface *iface, uint flags)
 {
   neighbor *n;
   int class, scope = -1;
-  uint h = neigh_hash(p, a, iface);
+  uint h = neigh_hash(s, a, iface);
   struct iface *ifreq = iface;
   struct ifa *addr = NULL;
 
   WALK_LIST(n, neigh_hash_table[h])	/* Search the cache */
-    if ((n->proto == p) && ipa_equal(n->addr, a) && (n->ifreq == iface))
+    if ((n->ifs == s) && ipa_equal(n->addr, a) && (n->ifreq == iface))
       return n;
 
   if (flags & NEF_IFACE)
@@ -245,7 +249,7 @@ neigh_find(struct proto *p, ip_addr a, struct iface *iface, uint flags)
     iface = (scope < 0) ? NULL : iface;
   }
   else
-    scope = if_connected_any(a, p->vrf, p->vrf_set, &iface, &addr, flags);
+    scope = if_connected_any(a, s->vrf, s->vrf_set, &iface, &addr, flags);
 
   /* scope < 0 means i don't know neighbor */
   /* scope >= 0  <=>  iface != NULL */
@@ -256,14 +260,26 @@ neigh_find(struct proto *p, ip_addr a, struct iface *iface, uint flags)
   n = sl_allocz(neigh_slab);
   add_tail(&neigh_hash_table[h], &n->n);
   add_tail((scope >= 0) ? &iface->neighbors : &sticky_neigh_list, &n->if_n);
+  add_tail(&s->neigh_list, &n->ifs_n);
+  n->e.hook = neigh_receive_notify;
+  n->e.data = n;
   n->addr = a;
   n->ifa = addr;
   n->iface = iface;
   n->ifreq = ifreq;
-  n->proto = p;
+  n->ifs = s;
   n->flags = flags;
   n->scope = scope;
 
+  return n;
+}
+
+neighbor *
+neigh_find(struct if_subscription *s, ip_addr a, struct iface *iface, uint flags)
+{
+  IFACE_LOCK;
+  neighbor *n = neigh_find_locked(s, a, iface, flags);
+  IFACE_UNLOCK;
   return n;
 }
 
@@ -276,10 +292,12 @@ neigh_find(struct proto *p, ip_addr a, struct iface *iface, uint flags)
 void
 neigh_dump(neighbor *n)
 {
+  IFACE_ASSERT_LOCKED;
   debug("%p %I %s %s ", n, n->addr,
 	n->iface ? n->iface->name : "[]",
 	n->ifreq ? n->ifreq->name : "[]");
-  debug("%s %p %08x scope %s", n->proto->name, n->data, n->aux, ip_scope_text(n->scope));
+//  debug("%s %p %08x scope %s", n->proto->name, n->data, n->aux, ip_scope_text(n->scope));
+  debug("%p %08x scope %s", n->data, n->aux, ip_scope_text(n->scope));
   if (n->flags & NEF_STICKY)
     debug(" STICKY");
   if (n->flags & NEF_ONLINK)
@@ -295,21 +313,37 @@ neigh_dump(neighbor *n)
 void
 neigh_dump_all(void)
 {
+  IFACE_LOCK;
   neighbor *n;
+  node *nn;
   int i;
 
   debug("Known neighbors:\n");
   for(i=0; i<NEIGH_HASH_SIZE; i++)
-    WALK_LIST(n, neigh_hash_table[i])
+    WALK_LIST2(n, nn, neigh_hash_table[i], n)
       neigh_dump(n);
   debug("\n");
+
+  IFACE_UNLOCK;
+}
+
+static inline void
+neigh_receive_notify(void *data)
+{
+  neighbor *n = data;
+
+  if (n->ifs->neigh_notify)
+    n->ifs->neigh_notify(n);
+
+  if ((n->scope < 0) && !(n->flags & NEF_STICKY))
+    neigh_free_locked(n);
 }
 
 static inline void
 neigh_notify(neighbor *n)
 {
-  if (n->proto->neigh_notify && (n->proto->proto_state != PS_STOP))
-    n->proto->neigh_notify(n);
+  IFACE_ASSERT_LOCKED;
+  ev_send(n->ifs->list, &n->e);
 }
 
 static void
@@ -340,12 +374,22 @@ neigh_down(neighbor *n)
   neigh_notify(n);
 }
 
-static inline void
-neigh_free(neighbor *n)
+void
+neigh_free_locked(neighbor *n)
 {
   rem_node(&n->n);
   rem_node(&n->if_n);
+  rem_node(&n->ifs_n);
+  ev_postpone(&n->e);
   sl_free(neigh_slab, n);
+}
+
+void
+neigh_free(neighbor *n)
+{
+  IFACE_LOCK;
+  neigh_free_locked(n);
+  IFACE_UNLOCK;
 }
 
 /**
@@ -360,7 +404,9 @@ neigh_free(neighbor *n)
 void
 neigh_update(neighbor *n, struct iface *iface)
 {
-  struct proto *p = n->proto;
+  IFACE_ASSERT_LOCKED;
+
+  struct if_subscription *s = n->ifs;
   struct ifa *ifa = NULL;
   int scope = -1;
 
@@ -369,7 +415,7 @@ neigh_update(neighbor *n, struct iface *iface)
     return;
 
   /* VRF-bound neighbors ignore changes in other VRFs */
-  if (p->vrf_set && (p->vrf != iface->master))
+  if (s->vrf_set && (s->vrf != iface->master))
     return;
 
   scope = if_connected(n->addr, iface, &ifa, n->flags);
@@ -379,7 +425,7 @@ neigh_update(neighbor *n, struct iface *iface)
   {
     /* When neighbor is going down, try to respawn it on other ifaces */
     if ((scope < 0) && (n->scope >= 0) && !n->ifreq && (n->flags & NEF_STICKY))
-      scope = if_connected_any(n->addr, p->vrf, p->vrf_set, &iface, &ifa, n->flags);
+      scope = if_connected_any(n->addr, s->vrf, s->vrf_set, &iface, &ifa, n->flags);
   }
   else
   {
@@ -408,7 +454,7 @@ neigh_update(neighbor *n, struct iface *iface)
 
   if ((n->scope < 0) && !(n->flags & NEF_STICKY))
   {
-    neigh_free(n);
+    neigh_free_locked(n);
     return;
   }
 
@@ -517,35 +563,6 @@ neigh_ifa_down(struct ifa *a)
   WALK_LIST2_DELSAFE(n, x, y, i->neighbors, if_n)
     if (n->ifa == a)
       neigh_update(n, i);
-}
-
-static inline void
-neigh_prune_one(neighbor *n)
-{
-  if (n->proto->proto_state != PS_DOWN)
-    return;
-
-  neigh_free(n);
-}
-
-/**
- * neigh_prune - prune neighbor cache
- *
- * neigh_prune() examines all neighbor entries cached and removes those
- * corresponding to inactive protocols. It's called whenever a protocol
- * is shut down to get rid of all its heritage.
- */
-void
-neigh_prune(void)
-{
-  neighbor *n;
-  node *m;
-  int i;
-
-  DBG("Pruning neighbors\n");
-  for(i=0; i<NEIGH_HASH_SIZE; i++)
-    WALK_LIST_DELSAFE(n, m, neigh_hash_table[i])
-      neigh_prune_one(n);
 }
 
 /**

@@ -15,6 +15,7 @@ struct domain_generic;
 struct lock_order {
   struct domain_generic *the_bird;
   struct domain_generic *bfd_io;
+  struct domain_generic *iface;
   struct domain_generic *rtable_internal;
   struct domain_generic *rtable;
   struct domain_generic *rt_attr;

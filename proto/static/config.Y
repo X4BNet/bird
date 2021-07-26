@@ -84,7 +84,9 @@ stat_nexthop:
   | VIA TEXT {
       this_snh = static_nexthop_new();
       this_snh->via = IPA_NONE;
+      IFACE_LOCK;
       this_snh->iface = if_get_by_name($2);
+      IFACE_UNLOCK;
     }
   | stat_nexthop MPLS label_stack {
     this_snh->mls = $3;

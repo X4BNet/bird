@@ -1302,7 +1302,7 @@ bgp_start_neighbor(struct bgp_proto *p)
 static void
 bgp_neigh_notify(neighbor *n)
 {
-  struct bgp_proto *p = (struct bgp_proto *) n->proto;
+  struct bgp_proto *p = (struct bgp_proto *) SKIP_BACK(struct proto, ifsub, n->ifs);
   int ps = p->p.proto_state;
 
   if (n != p->neigh)
@@ -1482,7 +1482,7 @@ bgp_start_locked(struct object_lock *lock)
     return;
   }
 
-  neighbor *n = neigh_find(&p->p, p->remote_ip, cf->iface, NEF_STICKY);
+  neighbor *n = neigh_find(&p->p.ifsub, p->remote_ip, cf->iface, NEF_STICKY);
   if (!n)
   {
     log(L_ERR "%s: Invalid remote address %I%J", p->p.name, p->remote_ip, cf->iface);
@@ -1782,7 +1782,7 @@ bgp_channel_start(struct channel *C)
   if (ipa_zero(c->next_hop_addr))
   {
     /* We know the iface for single-hop, we make lookup for multihop */
-    struct neighbor *nbr = p->neigh ?: neigh_find(&p->p, src, NULL, 0);
+    struct neighbor *nbr = p->neigh ?: neigh_find(&p->p.ifsub, src, NULL, 0);
     struct iface *iface = nbr ? nbr->iface : NULL;
 
     if (bgp_channel_is_ipv4(c) && iface && iface->addr4)

@@ -801,7 +801,7 @@ static struct resclass bfd_request_class = {
 static void
 bfd_neigh_notify(struct neighbor *nb)
 {
-  struct bfd_proto *p = (struct bfd_proto *) nb->proto;
+  struct bfd_proto *p = (struct bfd_proto *) SKIP_BACK(struct proto, ifsub, nb->ifs);
   struct bfd_neighbor *n = nb->data;
 
   if (!n)
@@ -831,7 +831,7 @@ bfd_start_neighbor(struct bfd_proto *p, struct bfd_neighbor *n)
     return;
   }
 
-  struct neighbor *nb = neigh_find(&p->p, n->addr, n->iface, NEF_STICKY);
+  struct neighbor *nb = neigh_find(&p->p.ifsub, n->addr, n->iface, NEF_STICKY);
   if (!nb)
   {
     log(L_ERR "%s: Invalid remote address %I%J", p->p.name, n->addr, n->iface);

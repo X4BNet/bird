@@ -2036,7 +2036,7 @@ again1:
       for (nh = nf->n.nhs; nh; nh = nh->next)
 	if (ipa_nonzero(nh->gw))
 	{
-	  neighbor *nbr = neigh_find(&p->p, nh->gw, nh->iface,
+	  neighbor *nbr = neigh_find(&p->p.ifsub, nh->gw, nh->iface,
 				    (nh->flags & RNF_ONLINK) ? NEF_ONLINK : 0);
 	  if (!nbr || (nbr->scope == SCOPE_HOST))
 	    { reset_ri(nf); break; }

@@ -12,13 +12,11 @@
 #include "lib/lists.h"
 #include "lib/resource.h"
 #include "lib/event.h"
+#include "nest/iface.h"
 #include "nest/rtable.h"
 #include "conf/conf.h"
 
-struct iface;
-struct ifa;
 struct rte;
-struct neighbor;
 struct rta;
 struct network;
 struct proto_config;
@@ -166,6 +164,8 @@ struct proto {
   char *last_state_name_announced;	/* Last state name we've announced to the user */
   char *message;			/* State-change message, allocated from proto_pool */
 
+  struct if_subscription ifsub;		/* Interface notification subscription structure */
+
   /*
    *	General protocol hooks:
    *
@@ -185,9 +185,9 @@ struct proto {
    *	   feed_end	Notify channel about finish of route feeding.
    */
 
+  void (*rt_notify)(struct proto *, struct channel *, linpool *, const net_addr *net, rte *new, rte *old);
   void (*if_notify)(struct proto *, unsigned flags, struct iface *i);
   void (*ifa_notify)(struct proto *, unsigned flags, struct ifa *a);
-  void (*rt_notify)(struct proto *, struct channel *, linpool *, const net_addr *net, rte *new, rte *old);
   void (*neigh_notify)(struct neighbor *neigh);
   void (*reload_routes)(struct channel *);
   void (*feed_begin)(struct channel *, int initial);

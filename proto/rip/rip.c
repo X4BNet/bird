@@ -406,7 +406,7 @@ rip_flush_table(struct rip_proto *p, struct rip_neighbor *n)
 struct rip_neighbor *
 rip_get_neighbor(struct rip_proto *p, ip_addr *a, struct rip_iface *ifa)
 {
-  neighbor *nbr = neigh_find(&p->p, *a, ifa->iface, 0);
+  neighbor *nbr = neigh_find(&p->p.ifsub, *a, ifa->iface, 0);
 
   if (!nbr || (nbr->scope == SCOPE_HOST) || !rip_iface_link_up(ifa))
     return NULL;
@@ -469,7 +469,7 @@ rip_unlock_neighbor(struct rip_neighbor *n)
 static void
 rip_neigh_notify(struct neighbor *nbr)
 {
-  struct rip_proto *p = (struct rip_proto *) nbr->proto;
+  struct rip_proto *p = (struct rip_proto *) SKIP_BACK(struct proto, ifsub, nbr->ifs);
   struct rip_neighbor *n = nbr->data;
 
   if (!n)
@@ -772,19 +772,24 @@ rip_reconfigure_iface(struct rip_proto *p, struct rip_iface *ifa, struct rip_ifa
   return 1;
 }
 
-static void
-rip_reconfigure_ifaces(struct rip_proto *p, struct rip_config *cf)
-{
-  struct iface *iface;
+struct rip_reconfigure {
+  struct rip_proto *p;
+  struct rip_config *new;
+};
 
-  WALK_LIST(iface, iface_list)
-  {
+static void
+rip_reconfigure_ifaces(struct iface *iface, void *data)
+{
+  struct rip_reconfigure *rr = data;
+  struct rip_proto *p = rr->p;
+  struct rip_config *cf = rr->new;
+
     if (!(iface->flags & IF_UP))
-      continue;
+      return;
 
     /* Ignore ifaces without appropriate address */
     if (rip_is_v2(p) ? !iface->addr4 : !iface->llv6)
-      continue;
+      return;
 
     struct rip_iface *ifa = rip_find_iface(p, iface);
     struct rip_iface_config *ic = (void *) iface_patt_find(&cf->patt_list, iface, NULL);
@@ -792,7 +797,7 @@ rip_reconfigure_ifaces(struct rip_proto *p, struct rip_config *cf)
     if (ifa && ic)
     {
       if (rip_reconfigure_iface(p, ifa, ic))
-	continue;
+	return;
 
       /* Hard restart */
       log(L_INFO "%s: Restarting interface %s", p->p.name, ifa->iface->name);
@@ -805,7 +810,6 @@ rip_reconfigure_ifaces(struct rip_proto *p, struct rip_config *cf)
 
     if (!ifa && ic)
       rip_add_iface(p, iface, ic);
-  }
 }
 
 static void
@@ -1175,7 +1179,9 @@ rip_reconfigure(struct proto *P, struct proto_config *CF)
 
   p->p.cf = CF;
   p->ecmp = new->ecmp;
-  rip_reconfigure_ifaces(p, new);
+
+  struct rip_reconfigure rr = { .p = p, .new = new };
+  if_foreach(rip_reconfigure_ifaces, &rr);
 
   p->rt_reload = 1;
   rip_kick_timer(p);

@@ -595,6 +595,10 @@ channel_rte_export(struct rt_export_request *req, linpool *lp, const net_addr *n
 
   birdloop_enter(&main_birdloop);
 
+  event_list *el = birdloop_event_list(&main_birdloop);
+  if (atomic_load_explicit(&el->count, memory_order_acquire))
+    ev_run_list(el);
+
   if (p->proto_state != PS_UP)
   {
     log(L_TRACE "Route export of %N to %s.%s ignored, protocol state is %s",
@@ -1142,24 +1146,63 @@ proto_configure_channel(struct proto *p, struct channel **pc, struct channel_con
   return 1;
 }
 
+static void
+proto_if_notify(struct if_subscription *ifs, unsigned c, struct iface *i)
+{
+  struct proto *p = SKIP_BACK(struct proto, ifsub, ifs);
+
+  if (p->if_notify &&
+      (p->proto_state != PS_DOWN) &&
+      (!p->vrf_set || p->vrf == i->master))
+    {
+      if (p->debug & D_IFACES)
+	log(L_TRACE "%s < interface %s %s", p->name, i->name,
+	    (c & IF_CHANGE_UP) ? "goes up" :
+	    (c & IF_CHANGE_DOWN) ? "goes down" :
+	    (c & IF_CHANGE_MTU) ? "changes MTU" :
+	    (c & IF_CHANGE_LINK) ? "changes link" :
+	    (c & IF_CHANGE_PREFERRED) ? "changes preferred address" :
+	    (c & IF_CHANGE_CREATE) ? "created" :
+	    "sends unknown event");
+      p->if_notify(p, c, i);
+    }
+}
+
+static void
+proto_ifa_notify(struct if_subscription *ifs, unsigned c, struct ifa *a)
+{
+  struct proto *p = SKIP_BACK(struct proto, ifsub, ifs);
+
+  if (p->ifa_notify &&
+      (p->proto_state != PS_DOWN) &&
+      (!p->vrf_set || p->vrf == a->iface->master))
+    {
+      if (p->debug & D_IFACES)
+	log(L_TRACE "%s < address %N on interface %s %s",
+	    p->name, &a->prefix, a->iface->name,
+	    (c & IF_CHANGE_UP) ? "added" : "removed");
+      p->ifa_notify(p, c, a);
+    }
+}
 
 static void
 proto_event(void *ptr)
 {
   struct proto *p = ptr;
 
+  /*
   if (p->do_start)
   {
-    if_feed_baby(p);
     p->do_start = 0;
   }
+  */
 
   if (p->do_stop)
   {
     if (p->proto == &proto_unix_iface)
       if_flush_ifaces(p);
-    p->do_stop = 0;
 
+    p->do_stop = 0;
     proto_check_stopped(p);
   }
 
@@ -1245,6 +1288,7 @@ proto_start(struct proto *p)
 {
   /* Here we cannot use p->cf->name since it won't survive reconfiguration */
   p->pool = rp_new(proto_pool, p->proto->name);
+  p->loop = &main_birdloop;
 
   if (graceful_restart_state == GRS_INIT)
     p->gr_recovery = 1;
@@ -2094,8 +2138,30 @@ static inline void
 proto_do_start(struct proto *p)
 {
   p->active = 1;
+
+  if (p->loop != &main_birdloop)
+    birdloop_enter(p->loop);
+
+  DBG("Announcing interfaces to new protocol %s\n", p->name);
+  birdloop_link(p->loop);
+  p->ifsub = (struct if_subscription) {
+    .list = birdloop_event_list(p->loop),
+    .if_notify = proto_if_notify,
+    .ifa_notify = proto_ifa_notify,
+    .neigh_notify = p->neigh_notify,
+    .hash_key = p->hash_key,
+    .vrf_set = p->vrf_set,
+    .vrf = p->vrf,
+  };
+  if_subscribe(&p->ifsub);
+
+  if (p->loop != &main_birdloop)
+    birdloop_leave(p->loop);
+
+  /*
   p->do_start = 1;
   ev_schedule(p->event);
+  */
 }
 
 static void
@@ -2119,6 +2185,15 @@ proto_do_pause(struct proto *p)
 static void
 proto_do_stop(struct proto *p)
 {
+  if (p->loop != &main_birdloop)
+    birdloop_enter(p->loop);
+
+  if_unsubscribe(&p->ifsub);
+  birdloop_unlink(p->loop);
+
+  if (p->loop != &main_birdloop)
+    birdloop_leave(p->loop);
+
   p->gr_recovery = 0;
 
   p->do_stop = 1;
@@ -2132,7 +2207,6 @@ static void
 proto_do_down(struct proto *p)
 {
   p->down_code = 0;
-  neigh_prune();
 
   if (p->main_source)
   {

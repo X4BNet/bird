@@ -9,13 +9,15 @@
 #ifndef _BIRD_IFACE_H_
 #define _BIRD_IFACE_H_
 
+#include "lib/event.h"
 #include "lib/lists.h"
 #include "lib/ip.h"
-
-extern list iface_list;
+#include "lib/locking.h"
+#include "lib/resource.h"
 
 struct proto;
 struct pool;
+struct neighbor;
 
 struct ifa {				/* Interface address */
   node n;
@@ -113,25 +115,46 @@ void if_start_update(void);
 void if_end_partial_update(struct iface *);
 void if_end_update(void);
 void if_flush_ifaces(struct proto *p);
-void if_feed_baby(struct proto *);
+void if_recalc_all_preferred_addresses(void);
+void if_foreach(void (*callback)(struct iface *, void *), void *data);
+
+/* You shall have locked IFACE_LOCK while calling these if_(find|get) functions */
 struct iface *if_find_by_index(unsigned);
 struct iface *if_find_by_name(const char *);
 struct iface *if_get_by_name(const char *);
-void if_recalc_all_preferred_addresses(void);
 
+struct if_subscription {
+  node n;
+  event_list *list;
+  void (*if_notify)(struct if_subscription *, unsigned flags, struct iface *i);
+  void (*ifa_notify)(struct if_subscription *, unsigned flags, struct ifa *a);
+  void (*neigh_notify)(struct neighbor *neigh);
+  struct iface *vrf;
+
+  list neigh_list;
+  u32 hash_key;				/* Random key used for hashing of neighbors */
+
+  u8 vrf_set;
+};
+
+void if_subscribe(struct if_subscription *);
+void if_unsubscribe(struct if_subscription *);
 
 /* The Neighbor Cache */
 
 typedef struct neighbor {
   node n;				/* Node in neighbor hash table chain */
   node if_n;				/* Node in per-interface neighbor list */
+  node ifs_n;				/* Node in per-subscription neighbor list */
+  event e;				/* Notification event */
   ip_addr addr;				/* Address of the neighbor */
   struct ifa *ifa;			/* Ifa on related iface */
   struct iface *iface;			/* Interface it's connected to */
   struct iface *ifreq;			/* Requested iface, NULL for any */
-  struct proto *proto;			/* Protocol this belongs to */
+  struct if_subscription *ifs;		/* Interface subscription hook */
   void *data;				/* Protocol-specific data */
   uint aux;				/* Protocol-specific data */
+  struct neigh_notify *notify;		/* Pending notification */
   u16 flags;				/* NEF_* flags */
   s16 scope;				/* Address scope, -1 for unreachable neighbors,
 					   SCOPE_HOST when it's our own address */
@@ -142,17 +165,17 @@ typedef struct neighbor {
 #define NEF_IFACE	4		/* Entry for whole iface */
 
 
-neighbor *neigh_find(struct proto *p, ip_addr a, struct iface *ifa, uint flags);
+neighbor *neigh_find(struct if_subscription *s, ip_addr a, struct iface *ifa, uint flags);
+void neigh_free(neighbor *n);
 
 void neigh_dump(neighbor *);
 void neigh_dump_all(void);
-void neigh_prune(void);
 void neigh_if_up(struct iface *);
 void neigh_if_down(struct iface *);
 void neigh_if_link(struct iface *);
 void neigh_ifa_up(struct ifa *a);
 void neigh_ifa_down(struct ifa *a);
-void neigh_init(struct pool *);
+void neigh_init(pool *p);
 
 /*
  *	Interface Pattern Lists
@@ -178,5 +201,23 @@ int iface_patts_equal(list *, list *, int (*)(struct iface_patt *, struct iface_
 
 
 u32 if_choose_router_id(struct iface_patt *mask, u32 old_id);
+
+DEFINE_DOMAIN(iface);
+extern DOMAIN(iface) iface_domain;
+
+//#define DEBUG_IFACE_LOCK(...) debug(__VA_ARGS__)
+#define DEBUG_IFACE_LOCK(...)
+
+#define IFACE_LOCK	({ \
+    DEBUG_IFACE_LOCK("iface lock at %s:%d\n", __FILE__, __LINE__); \
+    LOCK_DOMAIN(iface, iface_domain); \
+    })
+#define IFACE_UNLOCK	({ \
+    DEBUG_IFACE_LOCK("iface unlock at %s:%d\n", __FILE__, __LINE__); \
+    UNLOCK_DOMAIN(iface, iface_domain); \
+    })
+
+#define IFACE_ASSERT_LOCKED	ASSERT_DIE(DOMAIN_IS_LOCKED(iface, iface_domain))
+#define IFACE_ASSERT_UNLOCKED	ASSERT_DIE(!DOMAIN_IS_LOCKED(iface, iface_domain))
 
 #endif

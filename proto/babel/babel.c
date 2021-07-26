@@ -673,7 +673,7 @@ babel_announce_rte(struct babel_proto *p, struct babel_entry *e)
      * makes it possible to, e.g., assign /32 addresses on a mesh interface and
      * have routing work.
      */
-    if (!neigh_find(&p->p, r->next_hop, r->neigh->ifa->iface, 0))
+    if (!neigh_find(&p->p.ifsub, r->next_hop, r->neigh->ifa->iface, 0))
       a0.nh.flags = RNF_ONLINK;
 
     rte e0 = {
@@ -1766,43 +1766,54 @@ babel_reconfigure_iface(struct babel_proto *p, struct babel_iface *ifa, struct b
   return 1;
 }
 
+struct babel_reconfigure {
+  struct babel_proto *p;
+  struct babel_config *cf;
+};
+
+static void
+babel_reconfigure_ifaces_one(struct iface *iface, void *data)
+{
+  struct babel_reconfigure *br = data;
+  struct babel_proto *p = br->p;
+  struct babel_config *cf = br->cf;
+
+  if (!(iface->flags & IF_UP))
+    return;
+
+  /* Ignore ifaces without link-local address */
+  if (!iface->llv6)
+    return;
+
+  struct babel_iface *ifa = babel_find_iface(p, iface);
+  struct babel_iface_config *ic = (void *) iface_patt_find(&cf->iface_list, iface, NULL);
+
+  if (ic && iface_is_valid(p, iface))
+    ic = NULL;
+
+  if (ifa && ic)
+  {
+    if (babel_reconfigure_iface(p, ifa, ic))
+      return;
+
+    /* Hard restart */
+    log(L_INFO "%s: Restarting interface %s", p->p.name, ifa->iface->name);
+    babel_remove_iface(p, ifa);
+    babel_add_iface(p, iface, ic);
+  }
+
+  if (ifa && !ic)
+    babel_remove_iface(p, ifa);
+
+  if (!ifa && ic)
+    babel_add_iface(p, iface, ic);
+}
+
 static void
 babel_reconfigure_ifaces(struct babel_proto *p, struct babel_config *cf)
 {
-  struct iface *iface;
-
-  WALK_LIST(iface, iface_list)
-  {
-    if (!(iface->flags & IF_UP))
-      continue;
-
-    /* Ignore ifaces without link-local address */
-    if (!iface->llv6)
-      continue;
-
-    struct babel_iface *ifa = babel_find_iface(p, iface);
-    struct babel_iface_config *ic = (void *) iface_patt_find(&cf->iface_list, iface, NULL);
-
-    if (ic && iface_is_valid(p, iface))
-      ic = NULL;
-
-    if (ifa && ic)
-    {
-      if (babel_reconfigure_iface(p, ifa, ic))
-	continue;
-
-      /* Hard restart */
-      log(L_INFO "%s: Restarting interface %s", p->p.name, ifa->iface->name);
-      babel_remove_iface(p, ifa);
-      babel_add_iface(p, iface, ic);
-    }
-
-    if (ifa && !ic)
-      babel_remove_iface(p, ifa);
-
-    if (!ifa && ic)
-      babel_add_iface(p, iface, ic);
-  }
+  struct babel_reconfigure br = { .p = p, .cf = cf };
+  if_foreach(babel_reconfigure_ifaces_one, &br);
 }
 
 

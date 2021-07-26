@@ -627,6 +627,52 @@ radv_shutdown(struct proto *P)
     radv_iface_shutdown(ifa);
 }
 
+struct radv_reconfigure {
+  struct radv_proto *p;
+  struct radv_config *new;
+};
+
+static void
+radv_reconfigure_iface(struct iface *iface, void *data)
+{
+  struct radv_reconfigure *rr = data;
+  struct radv_proto *p = rr->p;
+  struct radv_config *new = rr->new;
+
+    if (!(iface->flags & IF_UP))
+      return;
+
+    /* Ignore non-multicast ifaces */
+    if (!(iface->flags & IF_MULTICAST))
+      return;
+
+    /* Ignore ifaces without link-local address */
+    if (!iface->llv6)
+      return;
+
+    struct radv_iface *ifa = radv_iface_find(p, iface);
+    struct radv_iface_config *ic = (struct radv_iface_config *)
+      iface_patt_find(&new->patt_list, iface, NULL);
+
+    if (ifa && ic)
+    {
+      ifa->cf = ic;
+
+      /* We cheat here - always notify the change even if there isn't
+	 any. That would leads just to a few unnecessary RAs. */
+      radv_iface_notify(ifa, RA_EV_CHANGE);
+    }
+
+    if (ifa && !ic)
+    {
+      radv_iface_shutdown(ifa);
+      radv_iface_remove(ifa);
+    }
+
+    if (!ifa && ic)
+      radv_iface_new(p, iface, ic);
+}
+
 static int
 radv_reconfigure(struct proto *P, struct proto_config *CF)
 {
@@ -677,42 +723,8 @@ radv_reconfigure(struct proto *P, struct proto_config *CF)
     rfree(lp);
   }
 
-  struct iface *iface;
-  WALK_LIST(iface, iface_list)
-  {
-    if (!(iface->flags & IF_UP))
-      continue;
-
-    /* Ignore non-multicast ifaces */
-    if (!(iface->flags & IF_MULTICAST))
-      continue;
-
-    /* Ignore ifaces without link-local address */
-    if (!iface->llv6)
-      continue;
-
-    struct radv_iface *ifa = radv_iface_find(p, iface);
-    struct radv_iface_config *ic = (struct radv_iface_config *)
-      iface_patt_find(&new->patt_list, iface, NULL);
-
-    if (ifa && ic)
-    {
-      ifa->cf = ic;
-
-      /* We cheat here - always notify the change even if there isn't
-	 any. That would leads just to a few unnecessary RAs. */
-      radv_iface_notify(ifa, RA_EV_CHANGE);
-    }
-
-    if (ifa && !ic)
-    {
-      radv_iface_shutdown(ifa);
-      radv_iface_remove(ifa);
-    }
-
-    if (!ifa && ic)
-      radv_iface_new(p, iface, ic);
-  }
+  struct radv_reconfigure rr = { .p = p, .new = new };
+  if_foreach(radv_reconfigure_iface, &rr);
 
   return 1;
 }

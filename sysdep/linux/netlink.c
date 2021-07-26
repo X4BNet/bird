@@ -28,6 +28,8 @@
 #include "lib/hash.h"
 #include "conf/conf.h"
 
+extern list iface_list;
+
 #include <asm/types.h>
 #include <linux/if.h>
 #include <linux/netlink.h>
@@ -704,7 +706,9 @@ nl_parse_multipath(struct nl_parse_state *s, struct krt_proto *p, struct rtattr 
       last = &(rv->next);
 
       rv->weight = nh->rtnh_hops;
+      IFACE_LOCK;
       rv->iface = if_find_by_index(nh->rtnh_ifindex);
+      IFACE_UNLOCK;
       if (!rv->iface)
 	return NULL;
 
@@ -754,7 +758,7 @@ nl_parse_multipath(struct nl_parse_state *s, struct krt_proto *p, struct rtattr 
 	    rv->flags |= RNF_ONLINK;
 
 	  neighbor *nbr;
-	  nbr = neigh_find(&p->p, rv->gw, rv->iface,
+	  nbr = neigh_find(&p->p.ifsub, rv->gw, rv->iface,
 			   (rv->flags & RNF_ONLINK) ? NEF_ONLINK : 0);
 	  if (!nbr || (nbr->scope == SCOPE_HOST))
 	    return NULL;
@@ -868,7 +872,9 @@ nl_parse_link(struct nlmsghdr *h, int scan)
   if (a[IFLA_MASTER])
     master = rta_get_u32(a[IFLA_MASTER]);
 
+  IFACE_LOCK;
   ifi = if_find_by_index(i->ifi_index);
+  IFACE_UNLOCK;
   if (!new)
     {
       DBG("KIF: IF%d(%s) goes down\n", i->ifi_index, name);
@@ -887,8 +893,10 @@ nl_parse_link(struct nlmsghdr *h, int scan)
       f.index = i->ifi_index;
       f.mtu = mtu;
 
+      IFACE_LOCK;
       f.master_index = master;
       f.master = if_find_by_index(master);
+      IFACE_UNLOCK;
 
       fl = i->ifi_flags;
       if (fl & IFF_UP)
@@ -936,7 +944,9 @@ nl_parse_addr4(struct ifaddrmsg *i, int scan, int new)
       return;
     }
 
+  IFACE_LOCK;
   ifi = if_find_by_index(i->ifa_index);
+  IFACE_UNLOCK;
   if (!ifi)
     {
       log(L_ERR "KIF: Received address message for unknown interface %d", i->ifa_index);
@@ -1037,7 +1047,9 @@ nl_parse_addr6(struct ifaddrmsg *i, int scan, int new)
       return;
     }
 
+  IFACE_LOCK;
   ifi = if_find_by_index(i->ifa_index);
+  IFACE_UNLOCK;
   if (!ifi)
     {
       log(L_ERR "KIF: Received address message for unknown interface %d", i->ifa_index);
@@ -1146,6 +1158,7 @@ kif_do_scan(struct kif_proto *p UNUSED)
     else
       log(L_DEBUG "nl_scan_ifaces: Unknown packet received (type=%d)", h->nlmsg_type);
 
+  IFACE_LOCK;
   /* Re-resolve master interface for slaves */
   struct iface *i;
   WALK_LIST(i, iface_list)
@@ -1165,6 +1178,7 @@ kif_do_scan(struct kif_proto *p UNUSED)
 	if_update(&f);
       }
     }
+  IFACE_UNLOCK;
 
   nl_request_dump(AF_INET, RTM_GETADDR);
   while (h = nl_get_scan())
@@ -1695,7 +1709,9 @@ nl_parse_route(struct nl_parse_state *s, struct nlmsghdr *h)
       if (i->rtm_flags & RTNH_F_DEAD)
 	return;
 
+      IFACE_LOCK;
       ra->nh.iface = if_find_by_index(oif);
+      IFACE_UNLOCK;
       if (!ra->nh.iface)
 	{
 	  log(L_ERR "KRT: Received route %N with unknown ifindex %u", n, oif);
@@ -1721,7 +1737,7 @@ nl_parse_route(struct nl_parse_state *s, struct nlmsghdr *h)
 	    ra->nh.flags |= RNF_ONLINK;
 
 	  neighbor *nbr;
-	  nbr = neigh_find(&p->p, ra->nh.gw, ra->nh.iface,
+	  nbr = neigh_find(&p->p.ifsub, ra->nh.gw, ra->nh.iface,
 			   (ra->nh.flags & RNF_ONLINK) ? NEF_ONLINK : 0);
 	  if (!nbr || (nbr->scope == SCOPE_HOST))
 	    {
