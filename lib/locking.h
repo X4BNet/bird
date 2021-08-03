@@ -18,6 +18,7 @@ struct lock_order {
   struct domain_generic *rtable_internal;
   struct domain_generic *rtable;
   struct domain_generic *rt_attr;
+  struct domain_generic *event;
 };
 
 extern _Thread_local struct lock_order locking_stack;

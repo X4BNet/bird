@@ -2181,8 +2181,9 @@ void
 io_init(void)
 {
   init_list(&sock_list);
-  init_list(&global_event_list);
-  init_list(&global_work_list);
+  ev_init_list(&global_event_list, &main_birdloop, "Global event list");
+  ev_init_list(&global_work_list, &main_birdloop, "Global work list");
+  ev_init_list(&main_birdloop.event_list, &main_birdloop, "Global fast event list");
   krt_io_init();
   // XXX init_times();
   // XXX update_times();
@@ -2215,6 +2216,7 @@ io_loop(void)
       times_update();
       events = ev_run_list(&global_event_list);
       events = ev_run_list_limited(&global_work_list, WORK_EVENTS_MAX) || events;
+      events = ev_run_list(&main_birdloop.event_list) || events;
       timers_fire(&main_birdloop.time);
       io_close_event();
 

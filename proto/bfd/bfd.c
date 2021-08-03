@@ -1027,7 +1027,7 @@ bfd_start(struct proto *P)
   pthread_spin_init(&p->lock, PTHREAD_PROCESS_PRIVATE);
 
   p->tpool = rp_new(P->pool, "BFD loop pool");
-  p->p.loop = birdloop_new(P->pool, p->domain.bfd_io);
+  p->p.loop = birdloop_new(P->pool, p->domain.bfd_io, "BFD");
   p->p.active_coroutines++;
 
   birdloop_enter_locked(p->p.loop);

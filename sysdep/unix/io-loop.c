@@ -35,6 +35,12 @@ static _Thread_local struct birdloop *birdloop_current;
 static _Thread_local struct birdloop *birdloop_wakeup_masked;
 static _Thread_local uint birdloop_wakeup_masked_count;
 
+event_list *
+birdloop_event_list(struct birdloop *loop)
+{
+  return &loop->event_list;
+}
+
 /*
  *	Wakeup code for birdloop
  */
@@ -122,42 +128,6 @@ birdloop_ping(struct birdloop *loop)
     birdloop_wakeup_masked_count++;
   else
     wakeup_do_kick(loop);
-}
-
-
-/*
- *	Events
- */
-
-static inline uint
-events_waiting(struct birdloop *loop)
-{
-  return !EMPTY_LIST(loop->event_list);
-}
-
-static inline void
-events_init(struct birdloop *loop)
-{
-  init_list(&loop->event_list);
-}
-
-static void
-events_fire(struct birdloop *loop)
-{
-  times_update(&loop->time);
-  ev_run_list(&loop->event_list);
-}
-
-void
-ev2_schedule(event *e)
-{
-  if (EMPTY_LIST(birdloop_current->event_list))
-    birdloop_ping(birdloop_current);
-
-  if (e->n.next)
-    rem_node(&e->n);
-
-  add_tail(&birdloop_current->event_list, &e->n);
 }
 
 
@@ -348,11 +318,11 @@ birdloop_init(void)
 static void birdloop_main(void *arg);
 
 struct birdloop *
-birdloop_new(pool *pp, struct domain_generic *dg)
+birdloop_new(pool *pp, struct domain_generic *dg, const char *name)
 {
   ASSERT_DIE(DG_IS_LOCKED(dg));
 
-  pool *p = rp_new(pp, "Loop pool");
+  pool *p = rp_new(pp, name);
   struct birdloop *loop = mb_allocz(p, sizeof(struct birdloop));
   loop->pool = p;
 
@@ -360,8 +330,7 @@ birdloop_new(pool *pp, struct domain_generic *dg)
   loop->time.loop = loop;
 
   wakeup_init(loop);
-
-  events_init(loop);
+  ev_init_list(&loop->event_list, loop, name);
   timers_init(&loop->time, p);
   sockets_init(loop);
 
@@ -460,11 +429,8 @@ birdloop_main(void *arg)
   birdloop_enter(loop);
   while (1)
   {
-    events_fire(loop);
     timers_fire(&loop->time);
-
-    times_update(&loop->time);
-    if (events_waiting(loop))
+    if (ev_run_list(&loop->event_list))
       timeout = 0;
     else if (t = timers_first(&loop->time))
       timeout = (tm_remains(t) TO_MS) + 1;

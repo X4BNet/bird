@@ -25,13 +25,16 @@ void sk_reloop(sock *, struct birdloop *);	/* Transfer the socket to another bir
 extern struct birdloop main_birdloop;
 
 /* Start a new birdloop owned by given pool and domain */
-struct birdloop *birdloop_new(pool *p, struct domain_generic *dg);
+struct birdloop *birdloop_new(pool *p, struct domain_generic *dg, const char *name);
 
 /* Stop the loop. At the end, the @stopped callback is called unlocked in tail
  * position to finish cleanup. Run birdloop_free() from that callback to free
  * the loop itself. */
 void birdloop_stop(struct birdloop *loop, void (*stopped)(void *data), void *data);
 void birdloop_free(struct birdloop *loop);
+
+/* Get birdloop's event list */
+event_list *birdloop_event_list(struct birdloop *loop);
 
 /* Enter and exit the birdloop */
 void birdloop_enter(struct birdloop *loop);

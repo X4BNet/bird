@@ -12,7 +12,7 @@ struct birdloop
   pool *pool;
 
   struct timeloop time;
-  list event_list;
+  event_list event_list;
   list sock_list;
   uint sock_num;
 
