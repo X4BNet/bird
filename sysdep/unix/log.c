@@ -15,6 +15,7 @@
  * user's manual.
  */
 
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdarg.h>
@@ -35,6 +36,10 @@ static FILE *dbgf;
 static list *current_log_list;
 static char *current_syslog_name; /* NULL -> syslog closed */
 
+static _Atomic uint max_coro_id = ATOMIC_VAR_INIT(1);
+static _Thread_local uint this_coro_id;
+
+#define THIS_CORO_ID  (this_coro_id ?: (this_coro_id = atomic_fetch_add_explicit(&max_coro_id, 1, memory_order_acq_rel)))
 
 #include <pthread.h>
 
@@ -178,7 +183,7 @@ log_commit(int class, buffer *buf)
 		l->pos += msg_len;
 	      }
 
-	      fprintf(l->fh, "%s <%s> ", tbuf, class_names[class]);
+	      fprintf(l->fh, "%s [%04x] <%s> ", tbuf, THIS_CORO_ID, class_names[class]);
 	    }
 	  fputs(buf->start, l->fh);
 	  fputc('\n', l->fh);
@@ -324,7 +329,7 @@ debug(const char *msg, ...)
 	sec = dbg_time.tv_sec - dbg_time_start.tv_sec - 1;
       }
 
-      int n = bsnprintf(pos, max, "%u.%09u: ", sec, nsec);
+      int n = bsnprintf(pos, max, "%u.%09u: [%04x] ", sec, nsec, THIS_CORO_ID);
       pos += n;
       max -= n;
 
