@@ -43,24 +43,10 @@
 /* Data accessed and modified from proto/bfd/io.c */
 _Thread_local struct timeloop *local_timeloop;
 
+_Atomic btime last_time;
+_Atomic btime real_time;
+
 void wakeup_kick_current(void);
-
-btime
-current_time(void)
-{
-  TLOCK_LOCAL_ASSERT(local_timeloop);
-  return local_timeloop->last_time;
-}
-
-btime
-current_real_time(void)
-{
-  TLOCK_LOCAL_ASSERT(local_timeloop);
-  if (!local_timeloop->real_time)
-    times_update_real_time(local_timeloop);
-
-  return local_timeloop->real_time;
-}
 
 
 #define TIMER_LESS(a,b)		((a)->expires < (b)->expires)
@@ -186,8 +172,8 @@ timers_fire(struct timeloop *loop)
   btime base_time;
   timer *t;
 
-  times_update(loop);
-  base_time = loop->last_time;
+  times_update();
+  base_time = current_time();
 
   while (t = timers_first(loop))
   {
@@ -198,8 +184,8 @@ timers_fire(struct timeloop *loop)
     {
       btime when = t->expires + t->recurrent;
 
-      if (when <= loop->last_time)
-	when = loop->last_time + t->recurrent;
+      if (when <= base_time)
+	when = base_time + t->recurrent;
 
       if (t->randomize)
 	when += random() % (t->randomize + 1);

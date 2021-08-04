@@ -296,7 +296,7 @@ sockets_fire(struct birdloop *loop)
   sock **psk = loop->poll_sk.data;
   int poll_num = loop->poll_fd.used - 1;
 
-  times_update(&loop->time);
+  times_update();
 
   /* Last fd is internal wakeup fd */
   if (pfd[poll_num].revents & POLLIN)
@@ -339,6 +339,7 @@ birdloop_init(void)
   main_birdloop.time.domain = the_bird_domain.the_bird;
   main_birdloop.time.loop = &main_birdloop;
 
+  times_update();
   timers_init(&main_birdloop.time, &root_pool);
 
   local_timeloop = &main_birdloop.time;

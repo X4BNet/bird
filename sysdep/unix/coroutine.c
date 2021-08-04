@@ -264,7 +264,7 @@ static void bsem_alarm_coro(void * data UNUSED)
     int timeout = -1;
     uint count_before = count;
 
-    times_update(&bsem_alarm_timeloop);
+    times_update();
 
     DBG("Alarms max=%u count=%u\n", max, count);
 
