@@ -32,6 +32,8 @@
  */
 
 static _Thread_local struct birdloop *birdloop_current;
+static _Thread_local struct birdloop *birdloop_wakeup_masked;
+static _Thread_local uint birdloop_wakeup_masked_count;
 
 /*
  *	Wakeup code for birdloop
@@ -110,17 +112,16 @@ wakeup_do_kick(struct birdloop *loop)
 void
 birdloop_ping(struct birdloop *loop)
 {
-  ASSERT_DIE(DG_IS_LOCKED(loop->time.domain));
+  if (DG_IS_LOCKED(loop->time.domain))
+    if (loop->ping_sent)
+      return;
+    else
+      loop->ping_sent = 1;
 
-  if (loop->ping_sent)
-    return;
-
-  loop->ping_sent = 1;
-
-  if (!loop->wakeup_masked)
-    wakeup_do_kick(loop);
+  if (loop == birdloop_wakeup_masked)
+    birdloop_wakeup_masked_count++;
   else
-    loop->wakeup_masked = 2;
+    wakeup_do_kick(loop);
 }
 
 
@@ -430,19 +431,19 @@ birdloop_leave(struct birdloop *loop)
 void
 birdloop_mask_wakeups(struct birdloop *loop)
 {
-  DG_LOCK(loop->time.domain);
-  loop->wakeup_masked = 1;
-  DG_UNLOCK(loop->time.domain);
+  ASSERT_DIE(birdloop_wakeup_masked == NULL);
+  birdloop_wakeup_masked = loop;
 }
 
 void
 birdloop_unmask_wakeups(struct birdloop *loop)
 {
-  DG_LOCK(loop->time.domain);
-  if (loop->wakeup_masked == 2)
+  ASSERT_DIE(birdloop_wakeup_masked == loop);
+  birdloop_wakeup_masked = NULL;
+  if (birdloop_wakeup_masked_count)
     wakeup_do_kick(loop);
-  loop->wakeup_masked = 0;
-  DG_UNLOCK(loop->time.domain);
+
+  birdloop_wakeup_masked_count = 0;
 }
 
 static void
