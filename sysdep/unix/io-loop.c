@@ -456,7 +456,7 @@ birdloop_main(void *arg)
   birdloop_current = loop;
   local_timeloop = &loop->time;
 
-  DG_LOCK(loop->time.domain);
+  birdloop_enter(loop);
   while (1)
   {
     events_fire(loop);
@@ -473,7 +473,7 @@ birdloop_main(void *arg)
     if (loop->poll_changed)
       sockets_prepare(loop);
 
-    DG_UNLOCK(loop->time.domain);
+    birdloop_leave(loop);
 
   try:
     rv = poll(loop->poll_fd.data, loop->poll_fd.used, timeout);
@@ -484,7 +484,7 @@ birdloop_main(void *arg)
       die("poll: %m");
     }
 
-    DG_LOCK(loop->time.domain);
+    birdloop_enter(loop);
 
     if (loop->close_scheduled)
       sockets_close_fds(loop);
@@ -498,7 +498,7 @@ birdloop_main(void *arg)
     timers_fire(&loop->time);
   }
 
-  DG_UNLOCK(loop->time.domain);
+  birdloop_leave(loop);
   loop->stopped(loop->stop_data);
 }
 

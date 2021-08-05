@@ -2279,9 +2279,9 @@ io_loop(void)
 
       /* And finally enter poll() to find active sockets */
       watchdog_stop();
-      the_bird_unlock();
+      birdloop_leave(&main_birdloop);
       pout = poll(pfd, nfds, poll_tout);
-      the_bird_lock();
+      birdloop_enter(&main_birdloop);
       watchdog_start();
 
       if (pout < 0)
