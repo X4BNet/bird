@@ -31,7 +31,7 @@
  *	Current thread context
  */
 
-static _Thread_local struct birdloop *birdloop_current;
+_Thread_local struct birdloop *birdloop_current;
 static _Thread_local struct birdloop *birdloop_wakeup_masked;
 static _Thread_local uint birdloop_wakeup_masked_count;
 
@@ -39,6 +39,16 @@ event_list *
 birdloop_event_list(struct birdloop *loop)
 {
   return &loop->event_list;
+}
+
+_Bool
+birdloop_inside(struct birdloop *loop)
+{
+  for (struct birdloop *c = birdloop_current; c; c = c->prev_loop)
+    if (loop == c)
+      return 1;
+
+  return 0;
 }
 
 /*
@@ -161,6 +171,7 @@ sockets_add(struct birdloop *loop, sock *s)
 void
 sk_start(sock *s)
 {
+  ASSERT_DIE(birdloop_current != &main_birdloop);
   sockets_add(birdloop_current, s);
 }
 
@@ -285,12 +296,15 @@ sockets_fire(struct birdloop *loop)
 
     if (pfd->revents & POLLIN)
       while (e && *psk && (*psk)->rx_hook)
-	e = sk_read(*psk, 0);
+	e = sk_read(*psk, pfd->revents);
 
     e = 1;
     if (pfd->revents & POLLOUT)
+    {
+      loop->poll_changed = 1;
       while (e && *psk)
 	e = sk_write(*psk);
+    }
   }
 }
 
@@ -313,6 +327,8 @@ birdloop_init(void)
   timers_init(&main_birdloop.time, &root_pool);
 
   local_timeloop = &main_birdloop.time;
+
+  birdloop_enter_locked(&main_birdloop);
 }
 
 static void birdloop_main(void *arg);
@@ -339,14 +355,29 @@ birdloop_new(pool *pp, struct domain_generic *dg, const char *name)
   return loop;
 }
 
+static void
+birdloop_do_stop(struct birdloop *loop, void (*stopped)(void *data), void *data)
+{
+  loop->stopped = stopped;
+  loop->stop_data = data;
+  wakeup_do_kick(loop);
+}
+
 void
 birdloop_stop(struct birdloop *loop, void (*stopped)(void *data), void *data)
 {
   DG_LOCK(loop->time.domain);
-  loop->stopped = stopped;
-  loop->stop_data = data;
-  wakeup_do_kick(loop);
+  birdloop_do_stop(loop, stopped, data);
   DG_UNLOCK(loop->time.domain);
+}
+
+void
+birdloop_stop_self(struct birdloop *loop, void (*stopped)(void *data), void *data)
+{
+  ASSERT_DIE(loop == birdloop_current);
+  ASSERT_DIE(DG_IS_LOCKED(loop->time.domain));
+
+  birdloop_do_stop(loop, stopped, data);
 }
 
 void
