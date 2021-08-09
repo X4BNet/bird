@@ -1109,7 +1109,11 @@ sk_passive_connected(sock *s, int type)
     return 1;
   }
 
-  sk_insert(t);
+  if (s->flags & SKF_PASSIVE_THREAD)
+    t->flags |= SKF_THREAD;
+  else
+    sk_insert(t);
+
   sk_alloc_bufs(t);
   s->rx_hook(t, 0);
   return 1;
@@ -1513,6 +1517,35 @@ sk_open_unix(sock *s, char *name)
   return 0;
 }
 
+static void
+sk_reloop_hook(void *_vs)
+{
+  sock *s = _vs;
+  if (birdloop_inside(&main_birdloop))
+  {
+    s->flags &= ~SKF_THREAD;
+    sk_insert(s);
+  }
+  else
+  {
+    s->flags |= SKF_THREAD;
+    sk_start(s);
+  }
+}
+
+void
+sk_reloop(sock *s, struct birdloop *loop)
+{
+  if (enlisted(&s->n))
+    rem_node(&s->n);
+
+  s->reloop = (event) {
+    .hook = sk_reloop_hook,
+    .data = s,
+  };
+
+  ev_send_loop(loop, &s->reloop);
+}
 
 #define CMSG_RX_SPACE MAX(CMSG4_SPACE_PKTINFO+CMSG4_SPACE_TTL, \
 			  CMSG6_SPACE_PKTINFO+CMSG6_SPACE_TTL)

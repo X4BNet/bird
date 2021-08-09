@@ -20,6 +20,7 @@ void ev2_schedule(event *e);
 
 void sk_start(sock *s);
 void sk_stop(sock *s);
+void sk_reloop(sock *, struct birdloop *);	/* Transfer the socket to another birdloop */
 
 extern struct birdloop main_birdloop;
 
