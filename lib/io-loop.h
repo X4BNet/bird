@@ -45,6 +45,9 @@ _Bool birdloop_inside(struct birdloop *loop);
 void birdloop_mask_wakeups(struct birdloop *loop);
 void birdloop_unmask_wakeups(struct birdloop *loop);
 
+void birdloop_link(struct birdloop *loop);
+void birdloop_unlink(struct birdloop *loop);
+
 void birdloop_ping(struct birdloop *loop);
 
 void birdloop_init(void);

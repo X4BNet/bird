@@ -383,6 +383,7 @@ birdloop_stop_self(struct birdloop *loop, void (*stopped)(void *data), void *dat
 void
 birdloop_free(struct birdloop *loop)
 {
+  ASSERT_DIE(loop->links == 0);
   rfree(loop->pool);
 }
 
@@ -445,6 +446,20 @@ birdloop_unmask_wakeups(struct birdloop *loop)
     wakeup_do_kick(loop);
 
   birdloop_wakeup_masked_count = 0;
+}
+
+void
+birdloop_link(struct birdloop *loop)
+{
+  ASSERT_DIE(birdloop_inside(loop));
+  loop->links++;
+}
+
+void
+birdloop_unlink(struct birdloop *loop)
+{
+  ASSERT_DIE(birdloop_inside(loop));
+  loop->links--;
 }
 
 static void

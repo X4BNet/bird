@@ -24,6 +24,8 @@ struct birdloop
   u8 ping_sent;
   int wakeup_fds[2];
 
+  uint links;
+
   void (*stopped)(void *data);
   void *stop_data;
 
