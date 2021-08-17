@@ -140,12 +140,12 @@ rt_find_source(struct proto *p, u32 id)
 struct rte_src *
 rt_get_source(struct proto *p, u32 id)
 {
-  ASSERT_DIE(p->proto_state == PS_UP);
+  RTA_LOCK;
 
   struct rte_src *src = rt_find_source(p, id);
 
   if (src)
-    return src;
+    goto done;
 
   src = sl_allocz(rte_src_slab);
   src->proto = p;
@@ -156,12 +156,15 @@ rt_get_source(struct proto *p, u32 id)
 
   HASH_INSERT2(src_hash, RSH, rte_src_pool, src);
 
+done:
+  RTA_UNLOCK;
   return src;
 }
 
 void
 rt_prune_sources(void)
 {
+  RTA_LOCK;
   HASH_WALK_FILTER(src_hash, next, src, sp)
   {
     if (atomic_load_explicit(&src->uc, memory_order_acquire) == 0)
@@ -177,6 +180,7 @@ rt_prune_sources(void)
   HASH_WALK_FILTER_END;
 
   HASH_MAY_RESIZE_DOWN(src_hash, RSH, rte_src_pool);
+  RTA_UNLOCK;
 }
 
 
