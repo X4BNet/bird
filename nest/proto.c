@@ -550,6 +550,7 @@ channel_export_stopped(struct rt_export_request *req)
   if (!c->in.hook)
     channel_stopped(c);
 
+  rt_prune_sources();
   birdloop_leave(&main_birdloop);
 }
 
