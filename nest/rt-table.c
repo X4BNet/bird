@@ -377,7 +377,9 @@ rte_free(rtable_private *tab, struct rte_storage *e)
 {
   DBG("rte_free(%s, %N)\n", tab->name, e->net->n.addr);
 
-  rt_unlock_source(e->src);
+  if (rt_unlock_source(e->src))
+    tab->prune_sources = 1;
+
   rta_free(e->attrs);
   sl_free(tab->rte_slab, e);
 }
@@ -2176,6 +2178,12 @@ rt_maint(void *ptr)
       if (rt_prune_table(tab))
 	finish_prune = 1;
 
+    if (tab->prune_sources)
+    {
+      tab->prune_sources = 0;
+      rt_prune_sources();
+    }
+
     if (!finish_prune && !tab->use_count && tab->deleted)
     {
       RT_UNLOCK(tab);
@@ -3145,6 +3153,7 @@ rte_update_in(struct channel *c, rte *new)
   rtable_private *tab = RT_PRIV(c->in_table);
   struct rte_storage *old, **pos;
   net *net;
+  int pass = 0;
 
   if (new->attrs)
   {
@@ -3171,8 +3180,8 @@ rte_update_in(struct channel *c, rte *new)
 	if (old->flags & (REF_STALE | REF_DISCARD | REF_MODIFY))
 	{
 	  old->flags &= ~(REF_STALE | REF_DISCARD | REF_MODIFY);
-	  RT_UNLOCK(c->in_table);
-	  return 1;
+	  pass = 1;
+	  goto done;
 	}
 
 	goto drop_update;
@@ -3198,8 +3207,8 @@ rte_update_in(struct channel *c, rte *new)
     if (!net->routes)
       fib_delete(&tab->fib, net);
 
-    RT_UNLOCK(c->in_table);
-    return 1;
+    pass = 1;
+    goto done;
   }
 
   struct channel_limit *l = &c->in.rx_limit;
@@ -3221,25 +3230,31 @@ rte_update_in(struct channel *c, rte *new)
   e->next = *pos;
   *pos = e;
   tab->rt_count++;
-  RT_UNLOCK(c->in_table);
-  return 1;
+
+  pass = 1;
+  goto done;
 
 drop_update:
-  c->in.hook->stats.updates_received++;
-  c->in.hook->stats.updates_ignored++;
-
   if (!net->routes)
     fib_delete(&tab->fib, net);
 
-  RT_UNLOCK(c->in_table);
-  return 0;
+  c->in.hook->stats.updates_received++;
+  c->in.hook->stats.updates_ignored++;
+  goto done;
 
 drop_withdraw:
   c->in.hook->stats.withdraws_received++;
   c->in.hook->stats.withdraws_ignored++;
 
+done:
+  if (tab->prune_sources)
+  {
+    rt_prune_sources();
+    tab->prune_sources = 0;
+  }
+
   RT_UNLOCK(c->in_table);
-  return 0;
+  return pass;
 }
 
 int
@@ -3342,6 +3357,12 @@ again:
     }
   }
   FIB_ITERATE_END;
+
+  if (t->prune_sources)
+  {
+    rt_prune_sources();
+    t->prune_sources = 0;
+  }
 
   RT_UNLOCK(t);
 }

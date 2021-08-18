@@ -664,11 +664,18 @@ channel_rte_export(struct rt_export_request *req, linpool *lp, const net_addr *n
   if (c->out_table && old_exported)
   {
     RT_LOCK(c->out_table);
+    struct rtable_private *tab = RT_PRIV(c->out_table);
     net *net = old_exported->net;
-    rte_free(RT_PRIV(c->out_table), old_exported);
+    rte_free(tab, old_exported);
 
     if (!net->routes)
-      fib_delete(&RT_PRIV(c->out_table)->fib, net);
+      fib_delete(&tab->fib, net);
+
+    if (tab->prune_sources)
+    {
+      rt_prune_sources();
+      tab->prune_sources = 0;
+    }
 
     RT_UNLOCK(c->out_table);
   }
@@ -2210,14 +2217,13 @@ proto_do_stop(struct proto *p)
 static void
 proto_notify_down(struct proto *p)
 {
-  ASSERT_DIE(birdloop_inside(&main_birdloop));
   ASSERT_DIE(proto_is_stopped(p));
 
   p->down_code = 0;
   p->proto_state = PS_DOWN;
 
   proto_log_state_change(p);
-  ev_schedule(&p->cleanup_event);
+  ev_send_loop(&main_birdloop, &p->cleanup_event);
 }
 
 

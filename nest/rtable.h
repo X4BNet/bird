@@ -195,6 +195,7 @@ typedef struct rtable_private {
   linpool *maint_lp;			/* Maintenance linpool */
   byte prune_state;			/* Table prune state, 1 -> scheduled, 2-> running */
   byte hcu_scheduled;			/* Hostcache update is scheduled */
+  byte prune_sources;			/* Call to rt_prune_sources() requested */
 
   struct bsem_alarm export_alarm;	/* Export notifier */
 

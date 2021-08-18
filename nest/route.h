@@ -224,8 +224,8 @@ void rt_prune_sources(void);
 /* Locking and unlocking itself may anyway run unguarded themselves */
 static inline void rt_lock_source(struct rte_src *src)
 { atomic_fetch_add_explicit(&src->uc, 1, memory_order_acq_rel); }
-static inline void rt_unlock_source(struct rte_src *src)
-{ atomic_fetch_sub_explicit(&src->uc, 1, memory_order_acq_rel); }
+static inline _Bool rt_unlock_source(struct rte_src *src)
+{ return 1 == atomic_fetch_sub_explicit(&src->uc, 1, memory_order_acq_rel); }
 
 struct ea_walk_state {
   ea_list *eattrs;			/* Ccurrent ea_list, initially set by caller */
