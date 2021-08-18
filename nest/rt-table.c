@@ -2180,6 +2180,9 @@ rt_maint(void *ptr)
 
     if (tab->prune_sources)
     {
+      if (config->table_debug)
+	log(L_TRACE "%s: Sources pruning routine requested", tab->name);
+
       tab->prune_sources = 0;
       rt_prune_sources();
     }
@@ -2616,7 +2619,8 @@ rt_export_cleanup(rtable_private *tab)
   struct rt_pending_export *first_export = tab->first_export;
   tab->first_export = last_export_to_free ? rt_next_export_fast(last_export_to_free) : NULL;
 
-  DBG("Export cleanup of %s: old first_export seq %lu, new %lu, min_seq %ld\n",
+  if (config->table_debug)
+    log(L_TRACE "%s: Export cleanup, old first_export seq %lu, new %lu, min_seq %ld",
       tab->name,
       first_export ? first_export->seq : 0,
       tab->first_export ? tab->first_export->seq : 0,
