@@ -287,7 +287,7 @@ perf_init(struct proto_config *CF)
   return P;
 }
 
-static int
+static void
 perf_start(struct proto *P)
 {
   struct perf_proto *p = (struct perf_proto *) P;
@@ -297,7 +297,7 @@ perf_start(struct proto *P)
   p->exp = p->from;
   ASSERT(p->data == NULL);
 
-  return PS_UP;
+  return proto_notify_state(P, PS_UP);
 }
 
 static int

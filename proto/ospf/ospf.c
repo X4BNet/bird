@@ -272,7 +272,7 @@ ospf_cleanup_gr_recovery(struct ospf_proto *p)
   p->gr_cleanup = 0;
 }
 
-static int
+static void
 ospf_start(struct proto *P)
 {
   struct ospf_proto *p = (struct ospf_proto *) P;
@@ -328,7 +328,7 @@ ospf_start(struct proto *P)
   WALK_LIST(ic, c->vlink_list)
     ospf_iface_new_vlink(p, ic);
 
-  return PS_UP;
+  return proto_notify_state(P, PS_UP);
 }
 
 static void
@@ -506,6 +506,8 @@ ospf_shutdown(struct proto *P)
 {
   struct ospf_proto *p = (struct ospf_proto *) P;
   struct ospf_iface *ifa;
+
+  proto_notify_state(P, PS_STOP);
 
   OSPF_TRACE(D_EVENTS, "Shutdown requested");
 

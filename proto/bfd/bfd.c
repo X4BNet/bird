@@ -1015,7 +1015,7 @@ bfd_init(struct proto_config *c)
   return p;
 }
 
-static int
+static void
 bfd_start(struct proto *P)
 {
   struct bfd_proto *p = (struct bfd_proto *) P;
@@ -1055,6 +1055,8 @@ bfd_start(struct proto *P)
   if (cf->accept_ipv6 && cf->accept_multihop)
     p->rx6_m = bfd_open_rx_sk(p, 1, SK_IPV6);
 
+  proto_notify_state(&p->p, PS_UP);
+
   birdloop_leave(p->p.loop);
 
   bfd_take_requests(p);
@@ -1062,8 +1064,6 @@ bfd_start(struct proto *P)
   struct bfd_neighbor *n;
   WALK_LIST(n, cf->neigh_list)
     bfd_start_neighbor(p, n);
-
-  return PS_UP;
 }
 
 static void
@@ -1094,6 +1094,8 @@ bfd_shutdown(struct proto *P)
 
   birdloop_enter(p->p.loop);
 
+  proto_notify_state(P, PS_STOP);
+
   rem_node(&p->bfd_node);
 
   struct bfd_neighbor *n;
@@ -1103,7 +1105,6 @@ bfd_shutdown(struct proto *P)
   bfd_drop_requests(p);
 
   birdloop_leave(p->p.loop);
-
   birdloop_stop(p->p.loop, bfd_loop_stopped, p);
 }
 

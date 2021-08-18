@@ -170,7 +170,7 @@ rt_prune_sources(void)
     if (atomic_load_explicit(&src->uc, memory_order_acquire) == 0)
     {
       if (atomic_fetch_sub_explicit(&src->proto->src_count, 1, memory_order_acq_rel) == 1)
-	ev_schedule(src->proto->event);
+	proto_check_stopped(src->proto);
 
       HASH_DO_REMOVE(src_hash, RSH, sp);
       idm_free(&src_ids, src->global_id);

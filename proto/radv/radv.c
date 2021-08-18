@@ -588,7 +588,7 @@ radv_set_fib(struct radv_proto *p, int up)
   p->prune_time = TIME_INFINITY;
 }
 
-static int
+static void
 radv_start(struct proto *P)
 {
   struct radv_proto *p = (struct radv_proto *) P;
@@ -602,7 +602,7 @@ radv_start(struct proto *P)
   radv_set_fib(p, cf->propagate_routes);
   p->prune_time = TIME_INFINITY;
 
-  return PS_UP;
+  return proto_notify_state(P, PS_UP);
 }
 
 static inline void
@@ -619,6 +619,8 @@ static void
 radv_shutdown(struct proto *P)
 {
   struct radv_proto *p = (struct radv_proto *) P;
+
+  proto_notify_state(P, PS_STOP);
 
   p->valid = 0;
 

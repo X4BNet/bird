@@ -71,7 +71,7 @@ struct protocol {
   struct proto * (*init)(struct proto_config *);		/* Create new instance */
   int (*reconfigure)(struct proto *, struct proto_config *);	/* Try to reconfigure instance, returns success */
   void (*dump)(struct proto *);			/* Debugging dump */
-  int (*start)(struct proto *);			/* Start the instance */
+  void (*start)(struct proto *);		/* Start the instance; must call proto_notify_state() */
   void (*shutdown)(struct proto *);		/* Stop the instance */
   _Bool (*cleanup)(struct proto *);		/* Called after shutdown when protocol became hungry/down; return 0 to be called again later, 1 for success */
   void (*get_status)(struct proto *, byte *buf); /* Get instance status (for `show protocols' command) */
@@ -134,7 +134,7 @@ struct proto {
   struct proto_config *cf;		/* Configuration data */
   struct proto_config *cf_new;		/* Configuration we want to switch to after shutdown (NULL=delete) */
   pool *pool;				/* Pool containing local objects */
-  event *event;				/* Protocol event */
+  event cleanup_event;			/* Scheduled to set proto_state to PS_DOWN */
   struct birdloop *loop;		/* BIRDloop running this protocol */
 
   list channels;			/* List of channels to rtables (struct channel) */
@@ -161,7 +161,7 @@ struct proto {
   byte down_code;			/* Reason for shutdown (PDC_* codes) */
   u32 hash_key;				/* Random key used for hashing of neighbors */
   btime last_state_change;		/* Time of last state transition */
-  char *last_state_name_announced;	/* Last state name we've announced to the user */
+  const char *last_state_name_announced;	/* Last state name we've announced to the user */
   char *message;			/* State-change message, allocated from proto_pool */
 
   struct if_subscription ifsub;		/* Interface notification subscription structure */
@@ -355,18 +355,7 @@ void proto_notify_state(struct proto *p, unsigned state);
  *	as a result of received ROUTE-REFRESH request).
  */
 
-static inline int proto_is_inactive(struct proto *p)
-{ return (p->active_channels == 0) && (p->active_coroutines == 0); }
-
-static inline int proto_is_stopped(struct proto *p)
-{ return (p->proto_state == PS_STOP) && proto_is_inactive(p); }
-
-static inline void proto_check_stopped(struct proto *p)
-{
-  if (proto_is_stopped(p))
-    proto_notify_state(p, PS_DOWN);
-}
-
+void proto_check_stopped(struct proto *p);
 
 /*
  *	Debugging flags

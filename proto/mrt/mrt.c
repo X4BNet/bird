@@ -893,7 +893,7 @@ mrt_init(struct proto_config *CF)
   return P;
 }
 
-static int
+static void
 mrt_start(struct proto *P)
 {
   struct mrt_proto *p = (void *) P;
@@ -904,7 +904,7 @@ mrt_start(struct proto *P)
 
   tm_start(p->timer, cf->period S);
 
-  return PS_UP;
+  return proto_notify_state(P, PS_UP);
 }
 
 static int

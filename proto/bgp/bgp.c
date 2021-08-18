@@ -1503,7 +1503,7 @@ bgp_start_locked(struct object_lock *lock)
     bgp_start_neighbor(p);
 }
 
-static int
+static void
 bgp_start(struct proto *P)
 {
   struct bgp_proto *p = (struct bgp_proto *) P;
@@ -1581,7 +1581,7 @@ bgp_start(struct proto *P)
 
   olock_acquire(lock);
 
-  return PS_START;
+  return proto_notify_state(P, PS_START);
 }
 
 extern int proto_restart;

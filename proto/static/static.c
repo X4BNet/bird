@@ -477,7 +477,7 @@ static_init(struct proto_config *CF)
   return P;
 }
 
-static int
+static void
 static_start(struct proto *P)
 {
   struct static_proto *p = (void *) P;
@@ -511,7 +511,7 @@ static_start(struct proto *P)
   WALK_LIST(r, cf->routes)
     static_add_rte(p, r);
 
-  return PS_UP;
+  return proto_notify_state(P, PS_UP);
 }
 
 static void
@@ -520,6 +520,8 @@ static_shutdown(struct proto *P)
   struct static_proto *p = (void *) P;
   struct static_config *cf = (void *) P->cf;
   struct static_route *r;
+
+  proto_notify_state(P, PS_STOP);
 
   /* Just reset the flag, the routes will be flushed by the nest */
   WALK_LIST(r, cf->routes)

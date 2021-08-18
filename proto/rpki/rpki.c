@@ -777,7 +777,7 @@ rpki_init(struct proto_config *CF)
   return P;
 }
 
-static int
+static void
 rpki_start(struct proto *P)
 {
   struct rpki_proto *p = (void *) P;
@@ -786,7 +786,7 @@ rpki_start(struct proto *P)
   p->cache = rpki_init_cache(p, cf);
   rpki_start_cache(p->cache);
 
-  return PS_START;
+  return proto_notify_state(P, PS_START);
 }
 
 static void

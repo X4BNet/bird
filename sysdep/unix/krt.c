@@ -133,7 +133,7 @@ kif_init(struct proto_config *c)
   return &p->p;
 }
 
-static int
+static void
 kif_start(struct proto *P)
 {
   struct kif_proto *p = (struct kif_proto *) P;
@@ -146,7 +146,7 @@ kif_start(struct proto *P)
   kif_scan(kif_scan_timer);
   tm_start(kif_scan_timer, KIF_CF->scan_time);
 
-  return PS_UP;
+  return proto_notify_state(P, PS_UP);
 }
 
 static void
@@ -154,9 +154,13 @@ kif_shutdown(struct proto *P)
 {
   struct kif_proto *p = (struct kif_proto *) P;
 
+  proto_notify_state(P, PS_STOP);
+
   tm_stop(kif_scan_timer);
   kif_sys_shutdown(p);
   kif_proto = NULL;
+
+  if_flush_ifaces(P);
 }
 
 static int
@@ -946,7 +950,7 @@ krt_init(struct proto_config *CF)
   return &p->p;
 }
 
-static int
+static void
 krt_start(struct proto *P)
 {
   struct krt_proto *p = (struct krt_proto *) P;
@@ -959,7 +963,8 @@ krt_start(struct proto *P)
 #ifdef AF_MPLS
   case NET_MPLS:	p->af = AF_MPLS; break;
 #endif
-  default: log(L_ERR "KRT: Tried to start with strange net type: %d", p->p.net_type); return PS_START; break;
+  default: log(L_ERR "KRT: Tried to start with strange net type: %d", p->p.net_type);
+	   return proto_notify_state(P, PS_START); break;
   }
 
   channel_setup_out_table(p->p.main_channel);
@@ -974,7 +979,7 @@ krt_start(struct proto *P)
   if (!krt_sys_start(p))
   {
     rem_node(&p->krt_node);
-    return PS_START;
+    return proto_notify_state(P, PS_START);
   }
 
   krt_scan_timer_start(p);
@@ -982,7 +987,7 @@ krt_start(struct proto *P)
   if (p->p.gr_recovery && KRT_CF->graceful_restart)
     p->p.main_channel->gr_wait = 1;
 
-  return PS_UP;
+  return proto_notify_state(P, PS_UP);
 }
 
 static void
@@ -992,13 +997,15 @@ krt_shutdown(struct proto *P)
 
   krt_scan_timer_stop(p);
 
+  proto_notify_state(P, PS_STOP);
+
   /* FIXME we should flush routes even when persist during reconfiguration */
   if (p->initialized && !KRT_CF->persist && (P->down_code != PDC_CMD_GR_DOWN))
     rt_flush_channel(p->p.main_channel, the_bird_linpool);
 
   p->ready = 0;
   p->initialized = 0;
-
+ 
   if (p->p.proto_state == PS_START)
     return;
 

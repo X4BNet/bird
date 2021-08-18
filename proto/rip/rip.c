@@ -1122,7 +1122,7 @@ rip_init(struct proto_config *CF)
   return P;
 }
 
-static int
+static void
 rip_start(struct proto *P)
 {
   struct rip_proto *p = (void *) P;
@@ -1144,13 +1144,15 @@ rip_start(struct proto *P)
 
   tm_start(p->timer, MIN(cf->min_timeout_time, cf->max_garbage_time));
 
-  return PS_UP;
+  return proto_notify_state(P, PS_UP);
 }
 
 static void
 rip_shutdown(struct proto *P)
 {
   struct rip_proto *p = (void *) P;
+
+  proto_notify_state(P, PS_STOP);
 
   TRACE(D_EVENTS, "Shutdown requested");
 

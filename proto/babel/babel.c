@@ -2261,7 +2261,7 @@ babel_randomize_router_id(struct babel_proto *p)
   TRACE(D_EVENTS, "Randomized router ID to %lR", p->router_id);
 }
 
-static int
+static void
 babel_start(struct proto *P)
 {
   struct babel_proto *p = (void *) P;
@@ -2289,7 +2289,7 @@ babel_start(struct proto *P)
 
   p->log_pkt_tbf = (struct tbf){ .rate = 1, .burst = 5 };
 
-  return PS_UP;
+  return proto_notify_state(P, PS_UP);
 }
 
 static inline void
@@ -2307,6 +2307,8 @@ babel_shutdown(struct proto *P)
 {
   struct babel_proto *p = (void *) P;
   struct babel_iface *ifa;
+
+  proto_notify_state(P, PS_STOP);
 
   TRACE(D_EVENTS, "Shutdown requested");
 
