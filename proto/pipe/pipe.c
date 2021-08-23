@@ -347,7 +347,7 @@ pipe_show_proto_info(struct proto *P)
   channel_show_limit(&p->pri->in.in_limit, "Import limit:");
   channel_show_limit(&p->sec->in.in_limit, "Export limit:");
 
-  if (P->proto_state != PS_DOWN)
+  if (P->proto_state == PS_UP)
     pipe_show_stats(p);
 }
 
