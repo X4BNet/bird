@@ -444,7 +444,9 @@ export_filter(struct rt_export_hook *hook, struct rte *rt, linpool *pool, int si
   if (silent && bmap_test(&hook->reject_map, rt->id))
     goto reject_noset;
 
+  birdloop_enter(req->loop);
   int v = req->preexport ? req->preexport(req, rt) : 0;
+  birdloop_leave(req->loop);
   if (v < 0)
     {
       if (silent)
