@@ -238,6 +238,7 @@ proto_add_channel(struct proto *p, struct channel_config *cf)
   };
 
   c->out = (struct rt_export_request) {
+    .loop = p->loop,
     .filter = cf->out_filter,
     .ra_mode = cf->ra_mode,
     .merge_limit = cf->merge_limit,
@@ -500,7 +501,7 @@ channel_stopped(struct channel *c)
       bug("Stopped channel in a bad state: %d", c->channel_state__XXX);
   }
 
-  birdloop_ping(&main_birdloop);
+  birdloop_ping(c->proto->loop);
 }
 
 void
@@ -508,7 +509,7 @@ channel_import_stopped(struct rt_import_request *req)
 {
   struct channel *c = SKIP_BACK(struct channel, in, req);
 
-  birdloop_enter(&main_birdloop);
+  birdloop_enter(c->proto->loop);
 
   req->hook = NULL;
 
@@ -519,15 +520,13 @@ channel_import_stopped(struct rt_import_request *req)
   if (!c->out.hook)
     channel_stopped(c);
 
-  birdloop_leave(&main_birdloop);
+  birdloop_leave(c->proto->loop);
 }
 
 static void
 channel_export_stopped(struct rt_export_request *req)
 {
   struct channel *c = SKIP_BACK(struct channel, out, req);
-
-  birdloop_enter(&main_birdloop);
 
   /* The hook has already stopped */
   req->hook = NULL;
@@ -536,7 +535,6 @@ channel_export_stopped(struct rt_export_request *req)
   {
     req->refeeding = 1;
     rt_request_export(c->table, req);
-    birdloop_leave(&main_birdloop);
     return;
   }
 
@@ -552,8 +550,6 @@ channel_export_stopped(struct rt_export_request *req)
   /* Import has also finished */
   if (!c->in.hook)
     channel_stopped(c);
-
-  birdloop_leave(&main_birdloop);
 }
 
 #if 0 && XXX_MOVE_THIS_CODE_ELSEWHERE
@@ -596,17 +592,10 @@ channel_rte_export(struct rt_export_request *req, linpool *lp, const net_addr *n
   struct proto *p = c->proto;
   struct export_stats *stats = &req->hook->stats;
 
-  birdloop_enter(&main_birdloop);
-
-  event_list *el = birdloop_event_list(&main_birdloop);
-  if (atomic_load_explicit(&el->count, memory_order_acquire))
-    ev_run_list(el);
-
   if (p->proto_state != PS_UP)
   {
     log(L_TRACE "Route export of %N to %s.%s ignored, protocol state is %s",
 	n, p->name, c->name, p_states[p->proto_state]);
-    birdloop_leave(&main_birdloop);
     return;
   }
 
@@ -624,7 +613,6 @@ channel_rte_export(struct rt_export_request *req, linpool *lp, const net_addr *n
     {
       stats->updates_limited++;
       channel_rte_trace_out(D_FILTERS, req, new, "rejected [limit]");
-      birdloop_leave(&main_birdloop);
       return;
     }
   }
@@ -636,7 +624,6 @@ channel_rte_export(struct rt_export_request *req, linpool *lp, const net_addr *n
     if (!rte_update_out(c, lp, new, old, &old_exported))
     {
       channel_rte_trace_out(D_ROUTES, req, new, "idempotent");
-      birdloop_leave(&main_birdloop);
       return;
     }
   }
@@ -680,8 +667,6 @@ channel_rte_export(struct rt_export_request *req, linpool *lp, const net_addr *n
 
     RT_UNLOCK(c->out_table);
   }
-
-  birdloop_leave(&main_birdloop);
 }
 
 void
@@ -689,20 +674,14 @@ channel_feed_begin(struct rt_export_request *req)
 {
   struct channel *c = SKIP_BACK(struct channel, out, req);
 
-  birdloop_enter(&main_birdloop);
-
   if (c->proto->feed_begin)
     c->proto->feed_begin(c, !req->refeeding);
-
-  birdloop_leave(&main_birdloop);
 }
 
 void
 channel_feed_end(struct rt_export_request *req)
 {
   struct channel *c = SKIP_BACK(struct channel, out, req);
-
-  birdloop_enter(&main_birdloop);
 
   /* Reset export limit if the feed ended with acceptable number of exported routes */
   struct channel_limit *l = &c->out_limit;
@@ -727,8 +706,6 @@ channel_feed_end(struct rt_export_request *req)
     rt_stop_export(req, channel_export_stopped);
   else
     req->refeeding = 0;
-
-  birdloop_leave(&main_birdloop);
 }
 
 static void
@@ -1270,6 +1247,7 @@ proto_new(struct proto_config *cf)
   p->debug = cf->debug;
   p->mrtdump = cf->mrtdump;
   p->name = cf->name;
+  p->loop = &main_birdloop;
   p->proto = cf->protocol;
   p->net_type = cf->net_type;
   p->disabled = cf->disabled;
@@ -1309,7 +1287,6 @@ proto_start(struct proto *p)
 
   /* Here we cannot use p->cf->name since it won't survive reconfiguration */
   p->pool = rp_new(proto_pool, p->proto->name);
-  p->loop = &main_birdloop;
 
   if (graceful_restart_state == GRS_INIT)
     p->gr_recovery = 1;

@@ -496,6 +496,8 @@ do_rt_notify(struct rt_export_hook *hook, linpool *lp, const net_addr *n, rte *n
 {
   struct export_stats *stats = &hook->stats;
 
+  birdloop_enter(hook->req->loop);
+
   if (new)
     stats->updates_accepted++;
   else
@@ -514,6 +516,8 @@ do_rt_notify(struct rt_export_hook *hook, linpool *lp, const net_addr *n, rte *n
   }
 
   hook->req->export(hook->req, lp, n, new, old, refeed);
+
+  birdloop_leave(hook->req->loop);
 }
 
 static void
@@ -1222,7 +1226,11 @@ rt_export_coro(void *_hook)
 	feeding = 1;
 
 	if (c->req->feed_begin)
+	{
+	  birdloop_enter(c->req->loop);
 	  c->req->feed_begin(c->req);
+	  birdloop_leave(c->req->loop);
+	}
 
 	if (!lp)
 	  lp = lp_new_default(c->pool);
@@ -1231,6 +1239,7 @@ rt_export_coro(void *_hook)
 	bmap_init(&c->reject_map, c->pool, 1024);
 	bmap_init(&c->seen_map, c->pool, 1024);
 
+	birdloop_enter(c->req->loop);
 	RT_LOCK(tab);
 
 	c->export_state = TES_FEEDING;
@@ -1245,6 +1254,7 @@ rt_export_coro(void *_hook)
 	  c->req->log_state_change(c->req, TES_FEEDING);
 
 	RT_UNLOCK(tab);
+	birdloop_leave(c->req->loop);
 	/* fall through */
 
       /* Regular feeding */
@@ -1256,7 +1266,11 @@ rt_export_coro(void *_hook)
 	  DBG("Export coro %p: feeding done\n", c);
 
 	  if (c->req->feed_end)
+	  {
+	    birdloop_enter(c->req->loop);
 	    c->req->feed_end(c->req);
+	    birdloop_leave(c->req->loop);
+	  }
 
 	  RT_LOCK(tab);
 	  feeding = 0;
@@ -1271,7 +1285,11 @@ rt_export_coro(void *_hook)
 	  RT_UNLOCK(tab);
 
 	  if (c->req->log_state_change)
+	  {
+	    birdloop_enter(c->req->loop);
 	    c->req->log_state_change(c->req, TES_READY);
+	    birdloop_leave(c->req->loop);
+	  }
 	}
 	/* fall through */
 
@@ -1329,7 +1347,9 @@ rt_export_coro(void *_hook)
 	RT_UNLOCK(tab);
 
 	/* Reporting the channel as stopped. */
+	birdloop_enter(c->req->loop);
 	c->stopped(c->req);
+	birdloop_leave(c->req->loop);
 
 	/* Freeing the hook together with its coroutine. */
 	RT_LOCK(tab);

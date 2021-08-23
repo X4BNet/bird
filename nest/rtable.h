@@ -324,6 +324,8 @@ struct rt_export_request {
   u8 refeeding;				/* We are refeeding */
   u8 explicit_flush;			/* Feed by withdrawals on export reset */
 
+  struct birdloop *loop;		/* Enter this loop on export */
+
   int (*preexport)(struct rt_export_request *req, struct rte *e);
   void (*export)(struct rt_export_request *req, linpool *, const net_addr *net, rte *new, rte *old, int refeed);
 
