@@ -21,6 +21,8 @@ struct birdloop
   u8 poll_changed;
   u8 close_scheduled;
 
+  u8 dummy;
+
   u8 ping_sent;
   int wakeup_fds[2];
 
