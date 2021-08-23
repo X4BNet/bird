@@ -16,6 +16,8 @@
 #include "nest/rtable.h"
 #include "conf/conf.h"
 
+DEFINE_DOMAIN(proto_io);
+
 struct rte;
 struct rta;
 struct network;

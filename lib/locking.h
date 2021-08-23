@@ -14,6 +14,7 @@ struct domain_generic;
 /* Here define the global lock order; first to last. */
 struct lock_order {
   struct domain_generic *the_bird;
+  struct domain_generic *proto_io;
   struct domain_generic *bfd_io;
   struct domain_generic *iface;
   struct domain_generic *rtable_internal;
