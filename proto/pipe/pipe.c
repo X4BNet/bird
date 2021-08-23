@@ -226,6 +226,34 @@ pipe_init(struct proto_config *CF)
   return P;
 }
 
+static void
+pipe_start(struct proto *P)
+{
+  struct pipe_proto *p = (void *) P;
+
+  p->pri_dom = DOMAIN_NEW(proto_io, P->name);
+  p->sec_dom = DOMAIN_NEW(proto_io, P->name);
+
+  p->pri->out.loop = birdloop_dummy(P->pool, p->pri_dom.proto_io, P->name);
+  p->sec->out.loop = birdloop_dummy(P->pool, p->sec_dom.proto_io, P->name);
+
+  proto_notify_state(P, PS_UP);
+}
+
+static _Bool
+pipe_cleanup(struct proto *P)
+{
+  struct pipe_proto *p = (void *) P;
+
+  p->pri->out.loop = &main_birdloop;
+  p->sec->out.loop = &main_birdloop;
+
+  DOMAIN_FREE(proto_io, p->pri_dom);
+  DOMAIN_FREE(proto_io, p->sec_dom);
+
+  return 1;
+}
+
 static int
 pipe_reconfigure(struct proto *P, struct proto_config *CF)
 {
@@ -340,6 +368,8 @@ struct protocol proto_pipe = {
   .config_size =	sizeof(struct pipe_config),
   .postconfig =		pipe_postconfig,
   .init =		pipe_init,
+  .start =		pipe_start,
+  .cleanup =		pipe_cleanup,
   .reconfigure =	pipe_reconfigure,
   .copy_config = 	pipe_copy_config,
   .get_status = 	pipe_get_status,
