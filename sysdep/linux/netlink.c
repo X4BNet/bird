@@ -872,9 +872,7 @@ nl_parse_link(struct nlmsghdr *h, int scan)
   if (a[IFLA_MASTER])
     master = rta_get_u32(a[IFLA_MASTER]);
 
-  IFACE_LOCK;
   ifi = if_find_by_index(i->ifi_index);
-  IFACE_UNLOCK;
   if (!new)
     {
       DBG("KIF: IF%d(%s) goes down\n", i->ifi_index, name);
@@ -893,10 +891,8 @@ nl_parse_link(struct nlmsghdr *h, int scan)
       f.index = i->ifi_index;
       f.mtu = mtu;
 
-      IFACE_LOCK;
       f.master_index = master;
       f.master = if_find_by_index(master);
-      IFACE_UNLOCK;
 
       fl = i->ifi_flags;
       if (fl & IFF_UP)
@@ -944,9 +940,7 @@ nl_parse_addr4(struct ifaddrmsg *i, int scan, int new)
       return;
     }
 
-  IFACE_LOCK;
   ifi = if_find_by_index(i->ifa_index);
-  IFACE_UNLOCK;
   if (!ifi)
     {
       log(L_ERR "KIF: Received address message for unknown interface %d", i->ifa_index);
@@ -1047,9 +1041,7 @@ nl_parse_addr6(struct ifaddrmsg *i, int scan, int new)
       return;
     }
 
-  IFACE_LOCK;
   ifi = if_find_by_index(i->ifa_index);
-  IFACE_UNLOCK;
   if (!ifi)
     {
       log(L_ERR "KIF: Received address message for unknown interface %d", i->ifa_index);
@@ -1154,7 +1146,11 @@ kif_do_scan(struct kif_proto *p UNUSED)
   nl_request_dump(AF_UNSPEC, RTM_GETLINK);
   while (h = nl_get_scan())
     if (h->nlmsg_type == RTM_NEWLINK || h->nlmsg_type == RTM_DELLINK)
+    {
+      IFACE_LOCK;
       nl_parse_link(h, 1);
+      IFACE_UNLOCK;
+    }
     else
       log(L_DEBUG "nl_scan_ifaces: Unknown packet received (type=%d)", h->nlmsg_type);
 
@@ -1183,14 +1179,22 @@ kif_do_scan(struct kif_proto *p UNUSED)
   nl_request_dump(AF_INET, RTM_GETADDR);
   while (h = nl_get_scan())
     if (h->nlmsg_type == RTM_NEWADDR || h->nlmsg_type == RTM_DELADDR)
+    {
+      IFACE_LOCK;
       nl_parse_addr(h, 1);
+      IFACE_UNLOCK;
+    }
     else
       log(L_DEBUG "nl_scan_ifaces: Unknown packet received (type=%d)", h->nlmsg_type);
 
   nl_request_dump(AF_INET6, RTM_GETADDR);
   while (h = nl_get_scan())
     if (h->nlmsg_type == RTM_NEWADDR || h->nlmsg_type == RTM_DELADDR)
+    {
+      IFACE_LOCK;
       nl_parse_addr(h, 1);
+      IFACE_UNLOCK;
+    }
     else
       log(L_DEBUG "nl_scan_ifaces: Unknown packet received (type=%d)", h->nlmsg_type);
 
@@ -1946,14 +1950,18 @@ nl_async_msg(struct nlmsghdr *h)
     case RTM_NEWLINK:
     case RTM_DELLINK:
       DBG("KRT: Received async link notification (%d)\n", h->nlmsg_type);
+      IFACE_LOCK;
       if (kif_proto)
 	nl_parse_link(h, 0);
+      IFACE_UNLOCK;
       break;
     case RTM_NEWADDR:
     case RTM_DELADDR:
       DBG("KRT: Received async address notification (%d)\n", h->nlmsg_type);
+      IFACE_LOCK;
       if (kif_proto)
 	nl_parse_addr(h, 0);
+      IFACE_UNLOCK;
       break;
     default:
       DBG("KRT: Received unknown async notification (%d)\n", h->nlmsg_type);

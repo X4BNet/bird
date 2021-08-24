@@ -53,6 +53,11 @@ pipe_rt_notify(struct proto *P, struct channel *src_ch, linpool *lp, const net_a
   struct pipe_proto *p = (void *) P;
   struct channel *dst = (src_ch == p->pri) ? p->sec : p->pri;
 
+  if (src_ch == p->pri)
+    ASSERT_DIE(birdloop_inside(p->pri->out.loop) && !birdloop_inside(&main_birdloop));
+  else
+    ASSERT_DIE(birdloop_inside(p->sec->out.loop) && !birdloop_inside(&main_birdloop));
+
   if (!new && !old)
     return;
 

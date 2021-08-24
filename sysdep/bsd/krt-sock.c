@@ -583,9 +583,7 @@ krt_read_ifannounce(struct ks_msg *msg)
   }
   else if (ifam->ifan_what == IFAN_DEPARTURE)
   {
-    IFACE_LOCK;
     struct iface *iface = if_find_by_index(ifam->ifan_index);
-    IFACE_UNLOCK;
 
     /* Interface is destroyed */
     if (!iface)
@@ -636,9 +634,7 @@ krt_read_ifinfo(struct ks_msg *msg, int scan)
   /* Note that asynchronous IFINFO messages do not contain iface
      name, so we have to found an existing iface by iface index */
 
-  IFACE_LOCK;
   iface = if_find_by_index(ifm->ifm_index);
-  IFACE_UNLOCK;
 
   if (!iface)
   {
@@ -704,9 +700,7 @@ krt_read_addr(struct ks_msg *msg, int scan)
   if (ifam->ifam_index == 0)
     return;
 
-  IFACE_LOCK;
   iface = if_find_by_index(ifam->ifam_index);
-  IFACE_UNLOCK;
 
   if(!iface)
   {
@@ -819,14 +813,20 @@ krt_read_msg(struct proto *p, struct ks_msg *msg, int scan)
       krt_read_route(msg, (struct krt_proto *)p, scan);
       break;
     case RTM_IFANNOUNCE:
+      IFACE_LOCK;
       krt_read_ifannounce(msg);
+      IFACE_UNLOCK;
       break;
     case RTM_IFINFO:
+      IFACE_LOCK;
       krt_read_ifinfo(msg, scan);
+      IFACE_UNLOCK;
       break;
     case RTM_NEWADDR:
     case RTM_DELADDR:
+      IFACE_LOCK;
       krt_read_addr(msg, scan);
+      IFACE_UNLOCK;
       break;
     default:
       break;

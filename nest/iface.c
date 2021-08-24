@@ -54,7 +54,6 @@ if_foreach(void (*callback)(struct iface *, void *), void *data)
 }
 
 static void if_recalc_preferred(struct iface *i);
-static void ifa_delete_locked(struct ifa *a);
 
 /**
  * ifa_dump - dump interface address
@@ -340,6 +339,7 @@ if_change_flags(struct iface *i, uint flags)
 void
 if_delete(struct iface *old)
 {
+  IFACE_ASSERT_LOCKED;
   struct iface f = {};
   strncpy(f.name, old->name, sizeof(f.name)-1);
   f.flags = IF_SHUTDOWN;
@@ -366,7 +366,6 @@ struct iface *
 if_update(struct iface *new)
 {
   ASSERT_THE_BIRD_LOCKED;
-  IFACE_LOCK;
 
   struct iface *i;
   unsigned c;
@@ -396,7 +395,6 @@ if_update(struct iface *new)
 	  if_notify_change(c, i);
 
 	i->flags |= IF_UPDATED;
-	IFACE_UNLOCK;
 	return i;
       }
   i = mb_alloc(if_pool, sizeof(struct iface));
@@ -406,7 +404,6 @@ newif:
   init_list(&i->neighbors);
   i->flags |= IF_UPDATED | IF_TMP_DOWN;		/* Tmp down as we don't have addresses yet */
   add_tail(&iface_list, &i->n);
-  IFACE_UNLOCK;
   return i;
 }
 
@@ -426,23 +423,15 @@ if_start_update(void)
   IFACE_UNLOCK;
 }
 
-static void
-if_end_partial_update_locked(struct iface *i)
+void
+if_end_partial_update(struct iface *i)
 {
+  IFACE_ASSERT_LOCKED;
   if (i->flags & IF_NEEDS_RECALC)
     if_recalc_preferred(i);
 
   if (i->flags & IF_TMP_DOWN)
     if_change_flags(i, i->flags & ~IF_TMP_DOWN);
-}
-
-void
-if_end_partial_update(struct iface *i)
-{
-  ASSERT_THE_BIRD_LOCKED;
-  IFACE_LOCK;
-  if_end_partial_update_locked(i);
-  IFACE_UNLOCK;
 }
 
 void
@@ -462,8 +451,8 @@ if_end_update(void)
 	{
 	  WALK_LIST_DELSAFE(a, b, i->addrs)
 	    if (!(a->flags & IA_UPDATED))
-	      ifa_delete_locked(a);
-	  if_end_partial_update_locked(i);
+	      ifa_delete(a);
+	  if_end_partial_update(i);
 	}
     }
 
@@ -691,8 +680,6 @@ ifa_same(struct ifa *a, struct ifa *b)
 struct ifa *
 ifa_update(struct ifa *a)
 {
-  IFACE_LOCK;
-
   struct iface *i = a->iface;
   struct ifa *b;
 
@@ -705,10 +692,9 @@ ifa_update(struct ifa *a)
 	    !((b->flags ^ a->flags) & IA_PEER))
 	  {
 	    b->flags |= IA_UPDATED;
-	    IFACE_UNLOCK;
 	    return b;
 	  }
-	ifa_delete_locked(b);
+	ifa_delete(b);
 	break;
       }
 
@@ -723,7 +709,6 @@ ifa_update(struct ifa *a)
   i->flags |= IF_NEEDS_RECALC;
   if (i->flags & IF_UP)
     ifa_notify_change(IF_CHANGE_CREATE | IF_CHANGE_UP, b);
-  IFACE_UNLOCK;
   return b;
 }
 
@@ -735,8 +720,8 @@ ifa_update(struct ifa *a)
  * interface. It's called by the platform dependent code during
  * the interface update process described under if_update().
  */
-static void
-ifa_delete_locked(struct ifa *a)
+void
+ifa_delete(struct ifa *a)
 {
   struct iface *i = a->iface;
   struct ifa *b;
@@ -767,14 +752,6 @@ ifa_delete_locked(struct ifa *a)
 	mb_free(b);
 	return;
       }
-}
-
-void
-ifa_delete(struct ifa *a)
-{
-  IFACE_LOCK;
-  ifa_delete_locked(a);
-  IFACE_UNLOCK;
 }
 
 u32
