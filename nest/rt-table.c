@@ -2728,7 +2728,7 @@ rt_export_cleanup(rtable_private *tab)
     first_export = next;
   }
 
-done:
+done:;
   struct rt_import_hook *ih;
   WALK_LIST2(ih, n, tab->imports, n)
     if (ih->import_state == TIS_WAITING)
