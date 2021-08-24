@@ -2728,6 +2728,7 @@ rt_export_cleanup(rtable_private *tab)
     first_export = next;
   }
 
+done:
   struct rt_import_hook *ih;
   WALK_LIST2(ih, n, tab->imports, n)
     if (ih->import_state == TIS_WAITING)
@@ -2740,7 +2741,6 @@ rt_export_cleanup(rtable_private *tab)
 	  bug("Import %p is down but still has some routes", ih);
       }
 
-done:
   if (atomic_fetch_and_explicit(&tab->export_used, 1, memory_order_acq_rel) & 1)
     bsem_post(tab->maint_sem);
 
