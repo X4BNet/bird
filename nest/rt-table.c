@@ -2612,6 +2612,7 @@ rt_export_cleanup(rtable_private *tab)
 
   u64 min_seq = ~((u64) 0);
   struct rt_pending_export *last_export_to_free = NULL;
+  struct rt_pending_export *first_export = tab->first_export;
 
   struct rt_export_hook *eh;
   node *n;
@@ -2639,7 +2640,6 @@ rt_export_cleanup(rtable_private *tab)
     goto done;
   }
 
-  struct rt_pending_export *first_export = tab->first_export;
   tab->first_export = last_export_to_free ? rt_next_export_fast(last_export_to_free) : NULL;
 
   if (config->table_debug)
