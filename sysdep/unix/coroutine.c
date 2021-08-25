@@ -260,8 +260,6 @@ static void bsem_alarm_coro(void * data UNUSED)
   {
     /* Ring the alarms */
     int timeout = -1;
-    uint count_before = count;
-
     times_update();
 
     DBG("Alarms max=%u count=%u\n", max, count);
@@ -286,7 +284,7 @@ static void bsem_alarm_coro(void * data UNUSED)
       }
     }
 
-    DBG("Processed %u fast alarms, timeout %d now", count_before - count, timeout);
+    DBG("Processed. Now %u fast alarms, timeout %d", count, timeout);
 
     struct pollfd pfd = {
       .fd = bsem_alarm_pipe[0],
@@ -304,12 +302,10 @@ static void bsem_alarm_coro(void * data UNUSED)
       continue;
     }
 
-    count_before = count;
-
     while (1)
     {
       if (count >= max)
-	xrealloc(ba, sizeof(struct bsem_alarm *) * (max *= 2));
+	ba = xrealloc(ba, sizeof(struct bsem_alarm *) * (max *= 2));
 
       e = read(bsem_alarm_pipe[0], &ba[count], sizeof(struct bsem_alarm *));
       if ((e < 0) && ((errno == EAGAIN) || (errno == EINTR)))
@@ -322,10 +318,12 @@ static void bsem_alarm_coro(void * data UNUSED)
       }
 
       ASSERT_DIE(e == sizeof(struct bsem_alarm *));
+      ASSERT_DIE(ba[count]);
+      DBG("Received fast alarm: %p pos %u", ba[count], count);
       count++;
     }
 
-    DBG("Received %u fast alarms", count - count_before);
+    DBG("Now %u fast alarms", count);
 
     qsort(ba, count, sizeof(struct bsem_alarm *), bsem_alarm_cmp);
   }
@@ -348,6 +346,8 @@ void bsem_alarm_init(void)
 
 void bsem_alarm(struct bsem_alarm *a, btime interval)
 {
+  ASSERT_DIE(a);
+
   if (atomic_load_explicit(&a->when, memory_order_acquire))
     return;
 
