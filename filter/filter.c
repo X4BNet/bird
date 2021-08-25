@@ -51,30 +51,26 @@ enum f_exception {
   FE_RETURN = 0x1,
 };
 
-
-struct filter_stack {
-  /* Value stack for execution */
-#define F_VAL_STACK_MAX	4096
-  uint vcnt;				/* Current value stack size; 0 for empty */
-  uint ecnt;				/* Current execute stack size; 0 for empty */
-
-  struct f_val vstk[F_VAL_STACK_MAX];	/* The stack itself */
-
-  /* Instruction stack for execution */
-#define F_EXEC_STACK_MAX 4096
-  struct {
-    const struct f_line *line;		/* The line that is being executed */
-    uint pos;				/* Instruction index in the line */
-    uint ventry;			/* Value stack depth on entry */
-    uint vbase;				/* Where to index variable positions from */
-    enum f_exception emask;		/* Exception mask */
-  } estk[F_EXEC_STACK_MAX];
-};
-
 /* Internal filter state, to be allocated on stack when executing filters */
 struct filter_state {
   /* Stacks needed for execution */
-  struct filter_stack *stack;
+  struct filter_stack {
+    /* Current filter stack depth */
+
+    /* Value stack */
+    uint vcnt, vlen;
+    struct f_val *vstk;
+
+    /* Instruction stack for execution */
+    uint ecnt, elen;
+    struct {
+      const struct f_line *line;		/* The line that is being executed */
+      uint pos;				/* Instruction index in the line */
+      uint ventry;			/* Value stack depth on entry */
+      uint vbase;				/* Where to index variable positions from */
+      enum f_exception emask;		/* Exception mask */
+    } *estk;
+  } stack;
 
   /* The route we are processing. This may be NULL to indicate no route available. */
   struct rte *rte;
@@ -93,9 +89,12 @@ struct filter_state {
 };
 
 _Thread_local static struct filter_state filter_state;
-_Thread_local static struct filter_stack filter_stack;
 
 void (*bt_assert_hook)(int result, const struct f_line_item *assert);
+
+#define _f_stack_init(fs, px, def) ((fs).stack.px##stk = alloca(sizeof(*(fs).stack.px##stk) * ((fs).stack.px##len = config->filter_##px##stk ?: (def))))
+
+#define f_stack_init(fs) ( _f_stack_init(fs, v, 128), _f_stack_init(fs, e, 128) )
 
 static inline void f_cache_eattrs(struct filter_state *fs)
 {
@@ -147,7 +146,7 @@ interpret(struct filter_state *fs, const struct f_line *line, struct f_val *val)
   ASSERT(line->args == 0);
 
   /* Initialize the filter stack */
-  struct filter_stack *fstk = fs->stack;
+  struct filter_stack *fstk = &fs->stack;
 
   fstk->vcnt = line->vars;
   memset(fstk->vstk, 0, sizeof(struct f_val) * line->vars);
@@ -174,6 +173,8 @@ interpret(struct filter_state *fs, const struct f_line *line, struct f_val *val)
 #define v1 vv(0)
 #define v2 vv(1)
 #define v3 vv(2)
+
+#define f_vcnt_check_overflow(n) do { if (fstk->vcnt + n >= fstk->vlen) runtime("Filter execution stack overflow"); } while (0)
 
 #define runtime(fmt, ...) do { \
   if (!(fs->flags & FF_SILENT)) \
@@ -245,11 +246,12 @@ f_run(const struct filter *filter, struct rte *rte, struct linpool *tmp_pool, in
 
   /* Initialize the filter state */
   filter_state = (struct filter_state) {
-    .stack = &filter_stack,
     .rte = rte,
     .pool = tmp_pool,
     .flags = flags,
   };
+
+  f_stack_init(filter_state);
 
   LOG_BUFFER_INIT(filter_state.buf);
 
@@ -283,10 +285,11 @@ enum filter_return
 f_eval_rte(const struct f_line *expr, struct rte *rte, struct linpool *tmp_pool)
 {
   filter_state = (struct filter_state) {
-    .stack = &filter_stack,
     .rte = rte,
     .pool = tmp_pool,
   };
+
+  f_stack_init(filter_state);
 
   LOG_BUFFER_INIT(filter_state.buf);
 
@@ -305,9 +308,10 @@ enum filter_return
 f_eval(const struct f_line *expr, struct linpool *tmp_pool, struct f_val *pres)
 {
   filter_state = (struct filter_state) {
-    .stack = &filter_stack,
     .pool = tmp_pool,
   };
+
+  f_stack_init(filter_state);
 
   LOG_BUFFER_INIT(filter_state.buf);
 
@@ -329,9 +333,10 @@ f_eval_int(struct cf_context *ctx, const struct f_line *expr)
 
   struct f_val val;
   filter_state = (struct filter_state) {
-    .stack = &filter_stack,
     .pool = ctx->cfg_mem,
   };
+
+  f_stack_init(filter_state);
 
   LOG_BUFFER_INIT(filter_state.buf);
 

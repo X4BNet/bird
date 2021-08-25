@@ -21,10 +21,8 @@
 #include "lib/resource.h"
 #include "lib/timer.h"
 
-/* Using a rather big stack for coroutines to allow for stack-local allocations.
- * In real world, the kernel doesn't alloc this memory until it is used.
- * */
-#define CORO_STACK_SIZE	1048576
+/* Raise this if your stacks get overflown */
+#define CORO_STACK_SIZE	32768
 
 /*
  *	Implementation of coroutines based on POSIX threads
