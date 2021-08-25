@@ -22,7 +22,7 @@
 #include "lib/timer.h"
 
 /* Raise this if your stacks get overflown */
-#define CORO_STACK_SIZE	32768
+#define CORO_STACK_SIZE	65536
 
 /*
  *	Implementation of coroutines based on POSIX threads
