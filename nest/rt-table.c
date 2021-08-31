@@ -81,7 +81,7 @@ struct rt_pending_export {
   u64 seq;				/* Sequential ID (table-local) of the pending export */
 };
 
-#define RT_PENDING_EXPORT_ITEMS		(get_page_size() - sizeof(struct rt_export_block)) / sizeof(struct rt_pending_export)
+#define RT_PENDING_EXPORT_ITEMS		(page_size - sizeof(struct rt_export_block)) / sizeof(struct rt_pending_export)
 
 struct rt_export_block {
   node n;
@@ -1077,7 +1077,7 @@ rte_announce(rtable_private *tab, net *net, struct rte_storage *new, struct rte_
 
   if (!rpeb)
   {
-    rpeb = alloc_page();
+    rpeb = alloc_page(tab->rp);
     *rpeb = (struct rt_export_block) {};
     add_tail(&tab->pending_exports, &rpeb->n);
   }
@@ -2713,10 +2713,10 @@ rt_export_cleanup(rtable_private *tab)
       rem_node(&reb->n);
 
 #ifdef LOCAL_DEBUG
-      memset(reb, 0xbe, get_page_size());
+      memset(reb, 0xbe, page_size);
 #endif
 
-      free_page(reb);
+      free_page(tab->rp, reb);
 
       if (!EMPTY_LIST(tab->pending_exports))
       {
