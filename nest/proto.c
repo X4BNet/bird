@@ -1122,6 +1122,7 @@ proto_if_notify(struct if_subscription *ifs, unsigned c, struct iface *i)
 
   if (p->if_notify &&
       (p->proto_state != PS_DOWN) &&
+      (p->proto_state != PS_STOP) &&
       (!p->vrf_set || p->vrf == i->master))
     {
       if (p->debug & D_IFACES)
@@ -1144,6 +1145,7 @@ proto_ifa_notify(struct if_subscription *ifs, unsigned c, struct ifa *a)
 
   if (p->ifa_notify &&
       (p->proto_state != PS_DOWN) &&
+      (p->proto_state != PS_STOP) &&
       (!p->vrf_set || p->vrf == a->iface->master))
     {
       if (p->debug & D_IFACES)
