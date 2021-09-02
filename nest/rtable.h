@@ -209,7 +209,6 @@ typedef struct rtable_private {
   list pending_exports;			/* List of packed struct rt_pending_export */
 
   struct rt_pending_export *first_export;	/* First export to announce */
-  struct fib export_fib;		/* Auxiliary fib for storing pending exports */
   u64 next_export_seq;			/* The next export will have this ID */
 } rtable_private;
 
@@ -436,7 +435,8 @@ struct rt_subscription {
 #define RTFP_RUNNING	2
 
 typedef struct network {
-  struct rte_storage *routes;			/* Available routes for this network */
+  struct rte_storage *routes;		/* Available routes for this network */
+  struct rt_pending_export *last, *first;	/* Routes with unfinished exports */
   struct fib_node n;			/* FIB flags reserved for kernel syncer */
 } net;
 

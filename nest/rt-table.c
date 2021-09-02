@@ -90,11 +90,6 @@ struct rt_export_block {
   struct rt_pending_export export[];
 };
 
-struct rt_pending_export_fib_node {
-  struct rt_pending_export *last, *first;
-  struct fib_node n;
-};
-
 static void rt_free_hostcache(rtable_private *tab);
 static void rt_notify_hostcache(rtable_private *tab, net *net);
 static void rt_update_hostcache(rtable_private *tab);
@@ -830,14 +825,12 @@ rte_feed(struct rt_export_hook *hook, linpool *lp)
 	break;
       }
 
-      struct rt_pending_export_fib_node *rpefn = fib_get(&tab->export_fib, n->n.addr);
-
       info[info_count++] = (struct rte_feed_info) {
 	.feed_pos = feed_count,
 	.count = count,
 	.n = n->n.addr,
-	.first = rpefn ? rpefn->first : NULL,
-	.last = rpefn ? rpefn->last : NULL,
+	.first = n->first,
+	.last = n->last,
       };
 	  
       /* Dump the routes */
@@ -1054,9 +1047,6 @@ rte_announce(rtable_private *tab, net *net, struct rte_storage *new, struct rte_
 
   rt_schedule_notify(tab);
 
-  /* Get the same-network squasher pointer */
-  struct rt_pending_export_fib_node *rpefn = fib_get(&tab->export_fib, net->n.addr);
-
   /* Get the pending export structure */
   struct rt_export_block *rpeb = NULL, *rpebsnl = NULL;
   u16 end = 0;
@@ -1104,20 +1094,20 @@ rte_announce(rtable_private *tab, net *net, struct rte_storage *new, struct rte_
   }
 
   /* Append to the same-network squasher list */
-  if (rpefn->last)
+  if (net->last)
   {
     struct rt_pending_export *rpenull = NULL;
     ASSERT_DIE(atomic_compare_exchange_strong_explicit(
-	  &rpefn->last->next, &rpenull, rpe,
+	  &net->last->next, &rpenull, rpe,
 	  memory_order_relaxed,
 	  memory_order_relaxed));
     
   }
 
-  rpefn->last = rpe;
+  net->last = rpe;
 
-  if (!rpefn->first)
-    rpefn->first = rpe;
+  if (!net->first)
+    net->first = rpe;
 
   if (tab->first_export == NULL)
     tab->first_export = rpe;
@@ -2394,7 +2384,6 @@ rt_setup(pool *pp, struct rtable_config *cf)
 
   t->next_export_seq = 1;
   init_list(&t->pending_exports);
-  fib_init(&t->export_fib, p, t->addr_type, sizeof(struct rt_pending_export_fib_node), OFFSETOF(struct rt_pending_export_fib_node, n), 0, NULL);
 
   if (t->internal = cf->internal)
     t->idom = DOMAIN_NEW(rtable_internal, t->name);
@@ -2521,8 +2510,9 @@ again:
 	  }
       }
 
-      if (!n->routes && !fib_find(&tab->export_fib, n->n.addr))		/* Orphaned FIB entry */
+      if (!n->routes && (!n->last || !n->first))		/* Orphaned FIB entry */
 	{
+	  ASSERT_DIE((!n->last) && (!n->first));
 	  FIB_ITERATE_PUT(fit);
 	  fib_delete(&tab->fib, n);
 	  goto again;
@@ -2672,18 +2662,14 @@ rt_export_cleanup(rtable_private *tab)
       first_export->new->net :
       first_export->old->net;
 
-    const net_addr *n = net->n.addr;
-
-    struct rt_pending_export_fib_node *rpefn = fib_find(&tab->export_fib, n);
-    ASSERT_DIE(rpefn);
-    ASSERT_DIE(rpefn->first == first_export);
+    ASSERT_DIE(net->first == first_export);
     
-    if (first_export == rpefn->last)
+    if (first_export == net->last)
       /* The only export here */
-      fib_delete(&tab->export_fib, rpefn);
+      net->last = net->first = NULL;
     else
       /* First is now the next one */
-      rpefn->first = atomic_load_explicit(&first_export->next, memory_order_relaxed);
+      net->first = atomic_load_explicit(&first_export->next, memory_order_relaxed);
 
     /* For now, the old route may be finally freed */
     if (first_export->old)
