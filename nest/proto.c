@@ -52,7 +52,6 @@ extern struct protocol proto_unix_iface;
 static void channel_request_reload(struct channel *c);
 static void proto_shutdown_loop(timer *);
 static void proto_rethink_goal(struct proto *p);
-static void proto_notify_down(struct proto *p);
 static const char *proto_state_name(struct proto *p);
 static void channel_verify_limits(struct channel *c);
 static void channel_in_notify_limit(struct rt_import_request *req, struct channel_limit *l, int dir, u32 rt_count);
@@ -486,12 +485,6 @@ channel_stopped(struct channel *c)
   {
     case XCS_STOP:
       channel_set_state(c, XCS_DOWN);
-
-      c->proto->active_channels--;
-      rt_prune_sources();
-
-      PD(c->proto, "Channel %s export stopped", c->name);
-      proto_check_stopped(c->proto);
       break;
 
     case XCS_RESTART:
@@ -551,21 +544,6 @@ channel_export_stopped(struct rt_export_request *req)
   if (!c->in.hook)
     channel_stopped(c);
 }
-
-#if 0 && XXX_MOVE_THIS_CODE_ELSEWHERE
-  switch (c->channel_state__XXX)
-  {
-    case XCS_STOP:
-      channel_set_state(c, XCS_DOWN);
-      return;
-    case XCS_RESTART:
-      channel_set_state(c, XCS_START);
-      return;
-    default:
-      bug("Stopping %s.%s export with invalid state %d", c->proto->name, c->name, c->channel_state__XXX);
-  }
-}
-#endif
 
 void NONNULL(1,2)
 channel_rte_import(struct channel *c, rte *new, linpool *lp)
@@ -828,10 +806,14 @@ channel_do_down(struct channel *c)
   c->reload_event = NULL;
   c->out_table = NULL;
 
-  /* The in_table and out_table are going to be freed by freeing their resource pools. */
-
   CALL(c->channel->cleanup, c);
 
+  /* The in_table and out_table are going to be freed by freeing their resource pools. */
+
+  c->proto->active_channels--;
+  PD(c->proto, "Channel %s stopped", c->name);
+
+  rt_prune_sources();
   proto_check_stopped(c->proto);
 }
 
@@ -1181,7 +1163,6 @@ static inline int proto_is_stopped(struct proto *p)
 	proto_state_name(p), p->active_channels, p->active_coroutines, src_count);
 
   return
-    (p->proto_state == PS_STOP) &&
     (p->active_channels == 0) &&
     (p->active_coroutines == 0) &&
     (src_count == 0);
@@ -1189,8 +1170,33 @@ static inline int proto_is_stopped(struct proto *p)
 
 void proto_check_stopped(struct proto *p)
 {
-  if (proto_is_stopped(p))
-    proto_notify_down(p);
+  if ((p->proto_state != PS_STOP) || !proto_is_stopped(p))
+    return;
+
+  if (p->proto->cleanup)
+    p->proto->cleanup(p);
+  else
+    proto_notify_state(p, PS_DOWN);
+}
+
+static void
+proto_check_stopped_main(struct proto *p)
+{
+  struct birdloop *loop = p->loop;
+  if (loop != &main_birdloop)
+    birdloop_enter(loop);
+
+  proto_check_stopped(p);
+
+  if (loop != &main_birdloop)
+    birdloop_leave(loop);
+}
+
+static void
+proto_stop_event(void *ptr)
+{
+  struct proto *p = ptr;
+  proto_check_stopped_main(p);
 }
 
 static void
@@ -1199,14 +1205,6 @@ proto_cleanup_event(void *ptr)
   struct proto *p = ptr;
 
   ASSERT_DIE(p->proto_state == PS_DOWN);
-
-  if (p->proto->cleanup && !p->proto->cleanup(p))
-  {
-    /* The protocol failed to cleanup, we'll try again. */
-    DBG("Will retry protocol %s cleanup\n", p->name);
-    ev_schedule(&p->cleanup_event);
-    return;
-  }
 
   DBG("Protocol %s finally done\n", p->name);
 
@@ -1273,6 +1271,8 @@ proto_init(struct proto_config *c, node *n)
 
   p->cleanup_event.hook = proto_cleanup_event;
   p->cleanup_event.data = p;
+  p->stop_event.hook = proto_stop_event;
+  p->stop_event.data = p;
 
   PD(p, "Initializing%s", p->disabled ? " [disabled]" : "");
 
@@ -1668,6 +1668,8 @@ proto_rethink_goal(struct proto *p)
 	p->proto->shutdown(p);
       else
 	proto_notify_state(p, PS_STOP);
+
+      proto_check_stopped_main(p);
     }
   }
 }
@@ -2189,19 +2191,19 @@ proto_do_stop(struct proto *p)
 
     rt_prune_sources();
   }
-
-  proto_check_stopped(p);
 }
 
 static void
-proto_notify_down(struct proto *p)
+proto_do_down(struct proto *p)
 {
-  ASSERT_DIE(proto_is_stopped(p));
+  ASSERT_DIE(proto_is_stopped(p) && (p->proto_state == PS_DOWN));
+  ASSERT_DIE(!ev_active(&p->cleanup_event));
 
+  if (ev_active(&p->stop_event))
+    ev_postpone(&p->stop_event);
+
+  p->cleanup_event.list = NULL;
   p->down_code = 0;
-  p->proto_state = PS_DOWN;
-
-  proto_log_state_change(p);
   ev_send_loop(&main_birdloop, &p->cleanup_event);
 }
 
@@ -2260,7 +2262,9 @@ proto_notify_state(struct proto *p, uint state)
     break;
 
   case PS_DOWN:
-    bug("Call proto_notify_down() instead of proto_notify_state().");
+    ASSERT(ps == PS_STOP);
+
+    proto_do_down(p);
     break;
 
   default:

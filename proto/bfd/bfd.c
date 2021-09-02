@@ -487,13 +487,9 @@ bfd_close_session(struct bfd_proto *p, struct bfd_session *s)
 */
 
 static void
-bfd_remove_session(struct bfd_proto *p, struct bfd_session *s)
+bfd_remove_session_locked(struct bfd_proto *p, struct bfd_session *s)
 {
-  ip_addr ip = s->addr;
-
   /* Caller should ensure that request list is empty */
-
-  birdloop_enter(p->p.loop);
 
   /* Remove session from notify list if scheduled for notification */
   /* No need for bfd_lock_sessions(), we are already protected by birdloop_enter() */
@@ -508,10 +504,16 @@ bfd_remove_session(struct bfd_proto *p, struct bfd_session *s)
   HASH_REMOVE(p->session_hash_id, HASH_ID, s);
   HASH_REMOVE(p->session_hash_ip, HASH_IP, s);
 
+  TRACE(D_EVENTS, "Session to %I removed", s->addr);
+
   sl_free(p->session_slab, s);
+}
 
-  TRACE(D_EVENTS, "Session to %I removed", ip);
-
+static void
+bfd_remove_session(struct bfd_proto *p, struct bfd_session *s)
+{
+  birdloop_enter(p->p.loop);
+  bfd_remove_session_locked(p, s);
   birdloop_leave(p->p.loop);
 }
 
@@ -705,15 +707,22 @@ bfd_take_requests(struct bfd_proto *p)
 }
 
 static void
-bfd_drop_requests(struct bfd_proto *p)
+bfd_drop_requests(struct bfd_proto *p, list *l)
 {
   node *n;
 
-  HASH_WALK(p->session_hash_id, next_id, s)
+  HASH_WALK_DELSAFE(p->session_hash_id, next_id, s)
   {
-    /* We assume that p is not in bfd_proto_list */
     WALK_LIST_FIRST(n, s->request_list)
-      bfd_submit_request(SKIP_BACK(struct bfd_request, n, n));
+    {
+      struct bfd_request *req = SKIP_BACK(struct bfd_request, n, n);
+      rem_node(&req->n);
+      add_tail(l, &req->n);
+      req->session = NULL;
+      bfd_request_notify(req, BFD_STATE_ADMIN_DOWN, 0);
+    }
+
+    bfd_remove_session_locked(p, s);
   }
   HASH_WALK_END;
 }
@@ -1028,7 +1037,6 @@ bfd_start(struct proto *P)
 
   p->tpool = rp_new(P->pool, "BFD loop pool");
   p->p.loop = birdloop_new(P->pool, p->domain.bfd_io, "BFD");
-  p->p.active_coroutines++;
 
   birdloop_enter_locked(p->p.loop);
 
@@ -1071,18 +1079,17 @@ bfd_loop_stopped(void *_p)
 {
   birdloop_enter(&main_birdloop);
 
+  struct proto *P = _p;
   struct bfd_proto *p = _p;
 
-  birdloop_enter(p->p.loop);
+  birdloop_enter(P->loop);
   rfree(p->tpool);
-  birdloop_leave(p->p.loop);
+  birdloop_leave(P->loop);
 
-  birdloop_free(p->p.loop);
-  p->p.loop = &main_birdloop;
+  birdloop_free(P->loop);
+  P->loop = &main_birdloop;
 
-  p->p.active_coroutines--;
-  proto_check_stopped(&p->p);
-
+  proto_notify_state(P, PS_DOWN);
   birdloop_leave(&main_birdloop);
 }
 
@@ -1092,7 +1099,9 @@ bfd_shutdown(struct proto *P)
   struct bfd_proto *p = (struct bfd_proto *) P;
   struct bfd_config *cf = (struct bfd_config *) (p->p.cf);
 
-  birdloop_enter(p->p.loop);
+  struct birdloop *loop = P->loop;
+
+  birdloop_enter(loop);
 
   proto_notify_state(P, PS_STOP);
 
@@ -1102,10 +1111,35 @@ bfd_shutdown(struct proto *P)
   WALK_LIST(n, cf->neigh_list)
     bfd_stop_neighbor(p, n);
 
-  bfd_drop_requests(p);
+  list requests;
+  init_list(&requests);
+  bfd_drop_requests(p, &requests);
 
-  birdloop_leave(p->p.loop);
-  birdloop_stop(p->p.loop, bfd_loop_stopped, p);
+  if (p->rx4_1) sk_stop(p->rx4_1);
+  if (p->rx4_m) sk_stop(p->rx4_m);
+  if (p->rx6_1) sk_stop(p->rx6_1);
+  if (p->rx6_m) sk_stop(p->rx6_m);
+
+  birdloop_leave(loop);
+
+  WALK_LIST_FIRST(n, requests)
+  {
+    struct bfd_request *req = SKIP_BACK(struct bfd_request, n, n);
+    log(L_INFO "Dropping request %p", req);
+    bfd_submit_request(req);
+  }
+
+  ASSERT_DIE(EMPTY_LIST(requests));
+
+  birdloop_enter(loop);
+  proto_check_stopped(P);
+  birdloop_leave(loop);
+}
+
+static void
+bfd_cleanup(struct proto *P)
+{
+  birdloop_stop_self(P->loop, bfd_loop_stopped, P);
 }
 
 static int
@@ -1201,6 +1235,7 @@ struct protocol proto_bfd = {
   .init =		bfd_init,
   .start =		bfd_start,
   .shutdown =		bfd_shutdown,
+  .cleanup =		bfd_cleanup,
   .reconfigure =	bfd_reconfigure,
   .copy_config =	bfd_copy_config,
 };

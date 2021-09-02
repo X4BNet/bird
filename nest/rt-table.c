@@ -1339,9 +1339,10 @@ rt_export_coro(void *_hook)
 	RT_UNLOCK(tab);
 
 	/* Reporting the channel as stopped. */
-	birdloop_enter(c->req->loop);
+	struct birdloop *loop = c->req->loop;
+	birdloop_enter(loop);
 	c->stopped(c->req);
-	birdloop_leave(c->req->loop);
+	birdloop_leave(loop);
 
 	/* Freeing the hook together with its coroutine. */
 	RT_LOCK(tab);

@@ -528,7 +528,7 @@ static_shutdown(struct proto *P)
     static_reset_rte(p, r);
 }
 
-static _Bool
+static void
 static_cleanup(struct proto *P)
 {
   struct static_proto *p = (void *) P;
@@ -547,7 +547,7 @@ static_cleanup(struct proto *P)
     RT_UNLOCK(p->igp_table_ip6);
   }
 
-  return 1;
+  proto_notify_state(P, PS_DOWN);
 }
 
 static void

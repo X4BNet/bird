@@ -532,9 +532,15 @@ birdloop_main(void *arg)
 
     if (rv)
       sockets_fire(loop);
-
-    timers_fire(&loop->time);
   }
+
+  /* Flush remaining events */
+  ASSERT_DIE(!ev_run_list(&loop->event_list));
+
+  /* No timers allowed */
+  ASSERT_DIE(timers_count(&loop->time) == 0);
+  ASSERT_DIE(EMPTY_LIST(loop->sock_list));
+  ASSERT_DIE(loop->sock_num == 0);
 
   birdloop_leave(loop);
   loop->stopped(loop->stop_data);

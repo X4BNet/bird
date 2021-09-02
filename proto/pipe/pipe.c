@@ -236,27 +236,48 @@ pipe_start(struct proto *P)
 {
   struct pipe_proto *p = (void *) P;
 
-  p->pri_dom = DOMAIN_NEW(proto_io, P->name);
-  p->sec_dom = DOMAIN_NEW(proto_io, P->name);
+  p->domain = DOMAIN_NEW(proto_io, P->name);
+  LOCK_DOMAIN(proto_io, p->domain);
 
-  p->pri->out.loop = birdloop_dummy(P->pool, p->pri_dom.proto_io, P->name);
-  p->sec->out.loop = birdloop_dummy(P->pool, p->sec_dom.proto_io, P->name);
+  p->pri->out.loop =
+  p->sec->out.loop =
+  P->loop = birdloop_new(P->pool, p->domain.proto_io, P->name);
 
+  birdloop_enter_locked(P->loop);
   proto_notify_state(P, PS_UP);
+  birdloop_leave(P->loop);
 }
 
-static _Bool
+static void
+pipe_shutdown(struct proto *P)
+{
+  birdloop_enter(P->loop);
+  proto_notify_state(P, PS_STOP);
+  birdloop_leave(P->loop);
+}
+
+static void
+pipe_stopped(void *_p)
+{
+  struct pipe_proto *p = _p;
+
+  birdloop_enter(&main_birdloop);
+
+  birdloop_free(p->p.loop);
+  p->p.loop = &main_birdloop;
+  proto_notify_state(&p->p, PS_DOWN);
+
+  birdloop_leave(&main_birdloop);
+}
+
+static void
 pipe_cleanup(struct proto *P)
 {
   struct pipe_proto *p = (void *) P;
 
-  p->pri->out.loop = &main_birdloop;
-  p->sec->out.loop = &main_birdloop;
+  p->pri->out.loop = p->sec->out.loop = &main_birdloop;
 
-  DOMAIN_FREE(proto_io, p->pri_dom);
-  DOMAIN_FREE(proto_io, p->sec_dom);
-
-  return 1;
+  birdloop_stop_self(P->loop, pipe_stopped, p);
 }
 
 static int
@@ -374,6 +395,7 @@ struct protocol proto_pipe = {
   .postconfig =		pipe_postconfig,
   .init =		pipe_init,
   .start =		pipe_start,
+  .shutdown =		pipe_shutdown,
   .cleanup =		pipe_cleanup,
   .reconfigure =	pipe_reconfigure,
   .copy_config = 	pipe_copy_config,

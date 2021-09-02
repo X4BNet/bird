@@ -74,7 +74,7 @@ struct protocol {
   void (*dump)(struct proto *);			/* Debugging dump */
   void (*start)(struct proto *);		/* Start the instance; must call proto_notify_state() */
   void (*shutdown)(struct proto *);		/* Stop the instance */
-  _Bool (*cleanup)(struct proto *);		/* Called after shutdown when protocol became hungry/down; return 0 to be called again later, 1 for success */
+  void (*cleanup)(struct proto *);		/* Called after shutdown when protocol became hungry/down; return 0 to be called again later, 1 for success */
   void (*get_status)(struct proto *, byte *buf); /* Get instance status (for `show protocols' command) */
   void (*get_route_info)(struct rte *, struct rte_storage *, byte *); /* Get route information (for `show route' command) */
   int (*get_attr)(const struct eattr *, byte *buf, int buflen);	/* ASCIIfy dynamic attribute (returns GA_*) */
@@ -135,7 +135,8 @@ struct proto {
   struct proto_config *cf;		/* Configuration data */
   struct proto_config *cf_new;		/* Configuration we want to switch to after shutdown (NULL=delete) */
   pool *pool;				/* Pool containing local objects */
-  event cleanup_event;			/* Scheduled to set proto_state to PS_DOWN */
+  event cleanup_event;			/* Scheduled to finish protocol down */
+  event stop_event;			/* Scheduled to check protocol stop state */
   struct birdloop *loop;		/* BIRDloop running this protocol */
 
   list channels;			/* List of channels to rtables (struct channel) */

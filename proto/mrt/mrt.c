@@ -718,13 +718,9 @@ mrt_event(void *P)
   p->table_dump = NULL;
 
   TRACE(D_EVENTS, "RIB table dump done");
-}
 
-static _Bool
-mrt_cleanup(struct proto *P)
-{
-  struct mrt_proto *p = (struct mrt_proto *) P;
-  return !ev_active(p->event);
+  if (p->p.proto_state == PS_STOP)
+    proto_notify_state(P, PS_DOWN);
 }
 
 
@@ -933,6 +929,23 @@ mrt_copy_config(struct config *new UNUSED, struct proto_config *dest UNUSED, str
   /* Do nothing */
 }
 
+static void
+mrt_shutdown(struct proto *P)
+{
+  struct mrt_proto *p = (struct mrt_proto *) P;
+  tm_stop(p->timer);
+  proto_notify_state(P, PS_STOP);
+}
+
+static void
+mrt_cleanup(struct proto *P)
+{
+  struct mrt_proto *p = (struct mrt_proto *) P;
+
+  if (!ev_active(p->event))
+    proto_notify_state(P, PS_DOWN);
+}
+
 
 struct protocol proto_mrt = {
   .name =		"MRT",
@@ -942,6 +955,7 @@ struct protocol proto_mrt = {
   .config_size =	sizeof(struct mrt_config),
   .init =		mrt_init,
   .start =		mrt_start,
+  .shutdown =		mrt_shutdown,
   .cleanup =		mrt_cleanup,
   .reconfigure =	mrt_reconfigure,
   .copy_config =	mrt_copy_config,

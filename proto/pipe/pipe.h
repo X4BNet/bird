@@ -19,7 +19,7 @@ struct pipe_proto {
   struct proto p;
   struct channel *pri;
   struct channel *sec;
-  DOMAIN(proto_io) pri_dom, sec_dom;
+  DOMAIN(proto_io) domain;
 };
 
 #endif
