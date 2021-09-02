@@ -115,11 +115,14 @@ ev_send(event_list *l, event *e)
   e->list = l;
 
   LOCK_DOMAIN(event, l->lock);
-  if (!enlisted(&e->n))
+  if (enlisted(&e->n))
   {
-    add_tail(&l->events, &e->n);
-    atomic_fetch_add_explicit(&l->count, 1, memory_order_acq_rel);
+    UNLOCK_DOMAIN(event, l->lock);
+    return;
   }
+
+  add_tail(&l->events, &e->n);
+  atomic_fetch_add_explicit(&l->count, 1, memory_order_acq_rel);
   UNLOCK_DOMAIN(event, l->lock);
 
   birdloop_ping(l->loop);
