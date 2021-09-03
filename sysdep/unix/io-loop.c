@@ -128,11 +128,10 @@ wakeup_do_kick(struct birdloop *loop)
 void
 birdloop_ping(struct birdloop *loop)
 {
-  if (DG_IS_LOCKED(loop->time.domain))
-    if (loop->ping_sent)
-      return;
-    else
-      loop->ping_sent = 1;
+  if (atomic_load_explicit(&loop->ping_sent, memory_order_acquire))
+    return;
+
+  atomic_store_explicit(&loop->ping_sent, 1, memory_order_release);
 
   if (loop == birdloop_wakeup_masked)
     birdloop_wakeup_masked_count++;
@@ -416,9 +415,6 @@ birdloop_leave_locked(struct birdloop *loop)
   ASSERT_DIE(birdloop_current == loop);
   ASSERT_DIE(local_timeloop == &loop->time);
 
-  /* Reset the ping limiter */
-  loop->ping_sent = 0;
-
   /* Restore the old context */
   birdloop_current = loop->prev_loop;
   local_timeloop = loop->prev_time;
@@ -505,6 +501,8 @@ birdloop_main(void *arg)
 
     if (rv)
       sockets_fire(loop);
+
+    atomic_store_explicit(&loop->ping_sent, 0, memory_order_release);
   }
 
   /* Flush remaining events */
