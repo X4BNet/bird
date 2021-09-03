@@ -128,8 +128,6 @@ wakeup_do_kick(struct birdloop *loop)
 void
 birdloop_ping(struct birdloop *loop)
 {
-  ASSERT_DIE(!loop->dummy);
-
   if (DG_IS_LOCKED(loop->time.domain))
     if (loop->ping_sent)
       return;
@@ -173,7 +171,6 @@ sockets_add(struct birdloop *loop, sock *s)
 void
 sk_start(sock *s)
 {
-  ASSERT_DIE(!birdloop_current->dummy);
   ASSERT_DIE(birdloop_current != &main_birdloop);
   sockets_add(birdloop_current, s);
 }
@@ -199,7 +196,6 @@ sockets_remove(struct birdloop *loop, sock *s)
 void
 sk_stop(sock *s)
 {
-  ASSERT_DIE(!birdloop_current->dummy);
   sockets_remove(birdloop_current, s);
 }
 
@@ -338,21 +334,6 @@ birdloop_init(void)
 static void birdloop_main(void *arg);
 
 struct birdloop *
-birdloop_dummy(pool *pp, struct domain_generic *dg, const char *name)
-{
-  pool *p = rp_new(pp, name);
-  struct birdloop *loop = mb_allocz(p, sizeof(struct birdloop));
-  loop->pool = p;
-
-  loop->time.domain = dg;
-  loop->time.loop = loop;
-
-  loop->dummy = 1;
-
-  return loop;
-}
-;
-struct birdloop *
 birdloop_new(pool *pp, struct domain_generic *dg, const char *name)
 {
   ASSERT_DIE(DG_IS_LOCKED(dg));
@@ -386,7 +367,6 @@ void
 birdloop_stop(struct birdloop *loop, void (*stopped)(void *data), void *data)
 {
   DG_LOCK(loop->time.domain);
-  ASSERT_DIE(!loop->dummy);
   birdloop_do_stop(loop, stopped, data);
   DG_UNLOCK(loop->time.domain);
 }
@@ -394,7 +374,6 @@ birdloop_stop(struct birdloop *loop, void (*stopped)(void *data), void *data)
 void
 birdloop_stop_self(struct birdloop *loop, void (*stopped)(void *data), void *data)
 {
-  ASSERT_DIE(!loop->dummy);
   ASSERT_DIE(loop == birdloop_current);
   ASSERT_DIE(DG_IS_LOCKED(loop->time.domain));
 
@@ -412,6 +391,7 @@ void
 birdloop_enter_locked(struct birdloop *loop)
 {
   ASSERT_DIE(DG_IS_LOCKED(loop->time.domain));
+  ASSERT_DIE(!birdloop_inside(loop));
 
   /* Store the old context */
   loop->prev_loop = birdloop_current;
@@ -432,12 +412,12 @@ birdloop_enter(struct birdloop *loop)
 void
 birdloop_leave_locked(struct birdloop *loop)
 {
-  /* Reset the ping limiter */
-  loop->ping_sent = 0;
-
   /* Check the current context */
   ASSERT_DIE(birdloop_current == loop);
   ASSERT_DIE(local_timeloop == &loop->time);
+
+  /* Reset the ping limiter */
+  loop->ping_sent = 0;
 
   /* Restore the old context */
   birdloop_current = loop->prev_loop;
@@ -454,7 +434,6 @@ birdloop_leave(struct birdloop *loop)
 void
 birdloop_mask_wakeups(struct birdloop *loop)
 {
-  ASSERT_DIE(!loop->dummy);
   ASSERT_DIE(birdloop_wakeup_masked == NULL);
   birdloop_wakeup_masked = loop;
 }
@@ -462,7 +441,6 @@ birdloop_mask_wakeups(struct birdloop *loop)
 void
 birdloop_unmask_wakeups(struct birdloop *loop)
 {
-  ASSERT_DIE(!loop->dummy);
   ASSERT_DIE(birdloop_wakeup_masked == loop);
   birdloop_wakeup_masked = NULL;
   if (birdloop_wakeup_masked_count)
@@ -491,11 +469,6 @@ birdloop_main(void *arg)
   struct birdloop *loop = arg;
   timer *t;
   int rv, timeout;
-
-  ASSERT_DIE(!loop->dummy);
-
-  birdloop_current = loop;
-  local_timeloop = &loop->time;
 
   birdloop_enter(loop);
   while (1)
