@@ -77,7 +77,7 @@ void lp_restore(linpool *m, lp_state *p);	/* Restore state */
 extern const int lp_chunk_size;
 #define LP_GAS		    1024
 #define LP_GOOD_SIZE(x)	    (((x + LP_GAS - 1) & (~(LP_GAS - 1))) - lp_chunk_size)
-#define lp_new_default(p)   lp_new(p, LP_GOOD_SIZE(LP_GAS*4))
+#define lp_new_default(p)   lp_new(p, 0)
 
 extern struct linpool *the_bird_linpool;	/* Use this for temporary allocations in main thread */
 
