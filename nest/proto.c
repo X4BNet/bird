@@ -526,6 +526,7 @@ channel_export_stopped(struct rt_export_request *req)
 
   if (c->refeed_pending)
   {
+    c->refeed_pending = 0;
     req->refeeding = 1;
     rt_request_export(c->table, req);
     return;

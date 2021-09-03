@@ -341,6 +341,7 @@ struct rt_export_hook {
   rtable *table;			/* The connected table */
 
   pool *pool;
+  linpool *lp;
 
   struct rt_export_request *req;	/* The requestor */
 
@@ -361,14 +362,15 @@ struct rt_export_hook {
 
   struct fib_iterator feed_fit;		/* Routing table iterator used during feeding */
 
-  struct coroutine *coro;		/* Exporter and feeder coroutine */
-  struct bsem *sem;			/* Exporter and feeder semaphore */
   struct bmap seen_map;			/* Keep track which exports were already procesed */
+
   struct rt_pending_export * _Atomic last_export;/* Last export processed */
+  struct rt_pending_export *rpe_next;	/* Next pending export to process */
+
+  struct event *event;			/* Export event doing all the work */
 
   btime last_state_change;		/* Time of last state transition */
 
-  u8 refeed_pending;			/* Refeeding and another refeed is scheduled */
   u8 export_state;			/* Route export state (TES_*, see below) */
 
   void (*stopped)(struct rt_export_request *);	/* Stored callback when export is stopped */

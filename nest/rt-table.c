@@ -439,9 +439,7 @@ export_filter(struct rt_export_hook *hook, struct rte *rt, linpool *pool, int si
   if (silent && bmap_test(&hook->reject_map, rt->id))
     goto reject_noset;
 
-  birdloop_enter(req->loop);
   int v = req->preexport ? req->preexport(req, rt) : 0;
-  birdloop_leave(req->loop);
   if (v < 0)
     {
       if (silent)
@@ -493,8 +491,6 @@ do_rt_notify(struct rt_export_hook *hook, linpool *lp, const net_addr *n, rte *n
 {
   struct export_stats *stats = &hook->stats;
 
-  birdloop_enter(hook->req->loop);
-
   if (new)
     stats->updates_accepted++;
   else
@@ -513,8 +509,6 @@ do_rt_notify(struct rt_export_hook *hook, linpool *lp, const net_addr *n, rte *n
   }
 
   hook->req->export(hook->req, lp, n, new, old, refeed);
-
-  birdloop_leave(hook->req->loop);
 }
 
 static void
@@ -890,6 +884,8 @@ next:;
   return put;
 }
 
+static struct rt_pending_export * rt_next_export_fast(struct rt_pending_export *last);
+
 static void
 rte_export(struct rt_export_hook *hook, linpool *lp, struct rt_pending_export *rpe)
 {
@@ -921,7 +917,7 @@ rte_export(struct rt_export_hook *hook, linpool *lp, struct rt_pending_export *r
 	}
 
 	rte_export_mark_seen(hook, rpe, rpe_last);
-	return;
+	break;
       }
     case RA_ANY:
       {
@@ -937,7 +933,7 @@ rte_export(struct rt_export_hook *hook, linpool *lp, struct rt_pending_export *r
 	}
 
 	rte_export_mark_seen(hook, rpe, rpe_last);
-	return;
+	break;
       }
     case RA_ACCEPTED:
     {
@@ -956,7 +952,7 @@ rte_export(struct rt_export_hook *hook, linpool *lp, struct rt_pending_export *r
       rt_notify_accepted(hook, lp, n, rpe, rpe_last, feed, count, 0);
       rte_export_mark_seen(hook, rpe, rpe_last);
 
-      return;
+      break;
     }
     case RA_MERGED:
     {
@@ -975,9 +971,24 @@ rte_export(struct rt_export_hook *hook, linpool *lp, struct rt_pending_export *r
       rt_notify_merged(hook, lp, n, rpe, rpe_last, feed, count, 0);
       rte_export_mark_seen(hook, rpe, rpe_last);
 
-      return;
+      break;
     }
   }
+
+  /* Cleaning up the old route rejection bit */
+  if (rpe->old)
+    bmap_clear(&hook->reject_map, rpe->old->id);
+
+  /* Get the next export if exists */
+  hook->rpe_next = rt_next_export_fast(rpe);
+
+  /* The last block may be available to free */
+  if (PAGE_HEAD(hook->rpe_next) != PAGE_HEAD(rpe))
+    rt_export_used(hook->table);
+
+  /* Releasing this export for cleanup routine */
+  DBG("store hook=%p last_export=%p seq=%lu\n", hook, rpe, rpe->seq);
+  atomic_store_explicit(&hook->last_export, rpe, memory_order_release);
 }
 
 
@@ -1172,7 +1183,7 @@ rt_announce_exports(rtable_private *tab)
     if (c->export_state != TES_READY)
       continue;
 
-    bsem_post(c->sem);
+    ev_send_loop(c->req->loop, c->event);
   }
 }
 
@@ -1192,51 +1203,38 @@ rt_last_export(rtable_private *tab)
   return rpe;
 }
 
-void
-rt_export_coro(void *_hook)
+static void rt_export_feeder_hook(void *_data);
+static void rt_export_regular_hook(void *_data);
+static void rt_export_stop_hook(struct rt_export_hook *c, _Bool feeding);
+
+static void
+rt_export_prepare_hook(void *_data)
 {
-  /* This is a coroutine. This is run unlocked. */
-  struct rt_export_hook *c = _hook;
+  struct rt_export_hook *c = _data;
   rtable *tab = c->table;
 
-  _Bool feeding = 0;
+  ASSERT_DIE(c->export_state == TES_HUNGRY);
 
-  linpool *lp = NULL;
-  struct rt_pending_export *rpe = NULL;
-
-  while (1)
-  {
-    if (lp)
-      lp_flush(lp);
-
-    uint es = c->stopped ? TES_STOP : c->export_state;
-
-    switch (es)
-    {
-      /* Feed initialization */
-      case TES_HUNGRY:
-	feeding = 1;
+  if (c->stopped)
+    return rt_export_stop_hook(c, 0);
 
 	if (c->req->feed_begin)
-	{
-	  birdloop_enter(c->req->loop);
 	  c->req->feed_begin(c->req);
-	  birdloop_leave(c->req->loop);
-	}
 
-	if (!lp)
-	  lp = lp_new_default(c->pool);
+	if (!c->lp)
+	  c->lp = lp_new_default(c->pool);
+	else
+	  lp_flush(c->lp);
 
 	bmap_init(&c->accept_map, c->pool, 1024);
 	bmap_init(&c->reject_map, c->pool, 1024);
 	bmap_init(&c->seen_map, c->pool, 1024);
 
-	birdloop_enter(c->req->loop);
 	RT_LOCK(tab);
 
 	c->export_state = TES_FEEDING;
 
-	rpe = rt_last_export(RT_PRIV(c->table));
+	struct rt_pending_export *rpe = rt_last_export(RT_PRIV(c->table));
 	DBG("store hook=%p last_export=%p seq=%lu\n", c, rpe, rpe ? rpe->seq : 0);
 	atomic_store_explicit(&c->last_export, rpe, memory_order_relaxed);
 
@@ -1246,30 +1244,37 @@ rt_export_coro(void *_hook)
 	  c->req->log_state_change(c->req, TES_FEEDING);
 
 	RT_UNLOCK(tab);
-	birdloop_leave(c->req->loop);
-	/* fall through */
 
-      /* Regular feeding */
-      case TES_FEEDING:
-	{
-	  if (rte_feed(c, lp))
-	    continue;
+	c->event->hook = rt_export_feeder_hook;
+	return rt_export_feeder_hook(_data);
+}
+
+static void
+rt_export_feeder_hook(void *_data)
+{
+  struct rt_export_hook *c = _data;
+  rtable *tab = c->table;
+
+  ASSERT_DIE(c->export_state == TES_FEEDING);
+  lp_flush(c->lp);
+
+  if (c->stopped)
+    return rt_export_stop_hook(c, 1);
+
+	  if (rte_feed(c, c->lp))
+	    return ev_send_loop(c->req->loop, c->event);
 
 	  DBG("Export coro %p: feeding done\n", c);
 
 	  if (c->req->feed_end)
-	  {
-	    birdloop_enter(c->req->loop);
 	    c->req->feed_end(c->req);
-	    birdloop_leave(c->req->loop);
-	  }
 
 	  RT_LOCK(tab);
-	  feeding = 0;
+	  c->event->hook = rt_export_regular_hook;
 
 	  /* We must acquire the channel's next export before we actually set ES_READY
 	   * to mitigate possible table export cleanup inbetween. */
-	  rpe = rt_next_export(c, RT_PRIV(c->table));
+	  c->rpe_next = rt_next_export(c, RT_PRIV(c->table));
 
 	  /* Now we're done with feeds. */
 	  c->export_state = TES_READY;
@@ -1277,54 +1282,47 @@ rt_export_coro(void *_hook)
 	  RT_UNLOCK(tab);
 
 	  if (c->req->log_state_change)
-	  {
-	    birdloop_enter(c->req->loop);
 	    c->req->log_state_change(c->req, TES_READY);
-	    birdloop_leave(c->req->loop);
-	  }
-	}
-	/* fall through */
 
-      /* Regular export */
-      case TES_READY:
-	{
-	  /* There is no export known from previous stages, try to load */
-	  if (!rpe)
-	  {
-	    /* Next export loading may clash with table cleanup */
-	    RT_LOCK(tab);
-	    rpe = rt_next_export(c, RT_PRIV(c->table));
-	    RT_UNLOCK(tab);
-	  }
+  if (c->rpe_next)
+    ev_send_loop(c->req->loop, c->event);
+}
 
-	  /* There is no export at all */
-	  if (!rpe)
-	    break;
+static void
+rt_export_regular_hook(void *_data)
+{
+  struct rt_export_hook *c = _data;
+  rtable *tab = c->table;
 
-	  /* Process the export */
-	  rte_export(c, lp, rpe);
+  ASSERT_DIE(c->export_state == TES_READY);
+  lp_flush(c->lp);
 
-	  /* Cleaning up the old route rejection bit */
-	  if (rpe->old)
-	    bmap_clear(&c->reject_map, rpe->old->id);
+  if (c->stopped)
+    return rt_export_stop_hook(c, 0);
 
-	  /* Get the next export if exists */
-	  struct rt_pending_export *rpe_next = rt_next_export_fast(rpe);
+  if (!c->rpe_next)
+  {
+    RT_LOCK(tab);
+    c->rpe_next = rt_next_export(c, RT_PRIV(c->table));
+    RT_UNLOCK(tab);
+  }
 
-	  /* The last block may be available to free */
-	  if (PAGE_HEAD(rpe_next) != PAGE_HEAD(rpe))
-	    rt_export_used(c->table);
+  if (!c->rpe_next)
+    return;
 
-	  /* Releasing this export for cleanup routine */
-	  DBG("store hook=%p last_export=%p seq=%lu\n", c, rpe, rpe->seq);
-	  atomic_store_explicit(&c->last_export, rpe, memory_order_release);
-	  rpe = rpe_next;
-	  continue;
-	}
+  /* Process the export */
+  rte_export(c, c->lp, c->rpe_next);
+  ev_send_loop(c->req->loop, c->event);
+}
 
-      /* Stop requested */
-      case TES_STOP:
-	RT_LOCK(tab);
+static void
+rt_export_stop_hook(struct rt_export_hook *c, _Bool feeding)
+{
+  rtable *tab = c->table;
+
+  RT_LOCK(tab);
+
+  c->export_state = TES_STOP;
 
 	/* Stop feeding */
 	if (feeding)
@@ -1339,10 +1337,7 @@ rt_export_coro(void *_hook)
 	RT_UNLOCK(tab);
 
 	/* Reporting the channel as stopped. */
-	struct birdloop *loop = c->req->loop;
-	birdloop_enter(loop);
 	c->stopped(c->req);
-	birdloop_leave(loop);
 
 	/* Freeing the hook together with its coroutine. */
 	RT_LOCK(tab);
@@ -1350,18 +1345,6 @@ rt_export_coro(void *_hook)
 	rt_unlock_table(RT_PRIV(tab));
 	DBG("Export hook %p in table %s finished uc=%u\n", c, tab->name, RT_PRIV(tab)->use_count);
 	RT_UNLOCK(tab);
-
-	return;
-
-      case TES_DOWN:
-	bug("Export coroutine running while ES_DOWN");
-
-      default:
-	bug("Broken export state: %u", es);
-    }
-
-    bsem_wait_all(c->sem);
-  }
 }
 
 void
@@ -1418,6 +1401,7 @@ rt_request_export(rtable *t, struct rt_export_request *req)
   pool *p = rp_new(tab->rp, "Export hook");
   struct rt_export_hook *hook = req->hook = mb_allocz(p, sizeof(struct rt_export_hook));
   hook->pool = p;
+  hook->lp = lp_new_default(p);
   
   hook->req = req;
   hook->table = t;
@@ -1426,20 +1410,18 @@ rt_request_export(rtable *t, struct rt_export_request *req)
 
   bmap_init(&hook->accept_map, p, 1024);
   bmap_init(&hook->reject_map, p, 1024);
-
-  hook->sem = bsem_new(p);
-
   bmap_init(&hook->seen_map, p, 1024);
 
   hook->last_state_change = current_time();
   hook->export_state = TES_HUNGRY;
+  hook->event = ev_new_init(p, rt_export_prepare_hook, hook);
 
   hook->n = (node) {};
   add_tail(&tab->exports, &hook->n);
 
   DBG("New export hook %p req %p in table %s uc=%u\n", hook, req, tab->name, tab->use_count);
 
-  hook->coro = coro_run(p, rt_export_coro, hook);
+  ev_send_loop(req->loop, hook->event);
 
   RT_UNLOCK(t);
 }
@@ -1451,7 +1433,7 @@ rt_stop_export(struct rt_export_request *req, void (*stopped)(struct rt_export_r
   struct rt_export_hook *hook = req->hook;
 
   hook->stopped = stopped;
-  bsem_post(hook->sem);
+  ev_send_loop(req->loop, hook->event);
 }
 
 const char *rt_import_state_name_array[] = {
@@ -2085,8 +2067,8 @@ rt_dump_hooks(rtable *t)
   {
     eh->req->dump_req(eh->req);
     debug("  Export hook %p requested by %p:"
-       " refeed_pending=%u last_state_change=%t export_state=%u stopped=%p\n",
-       eh, eh->req, eh->refeed_pending, eh->last_state_change, eh->export_state, eh->stopped);
+       " last_state_change=%t export_state=%u stopped=%p\n",
+       eh, eh->req, eh->last_state_change, eh->export_state, eh->stopped);
   }
   debug("\n");
   RT_UNLOCK(t);
