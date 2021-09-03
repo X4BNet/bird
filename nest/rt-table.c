@@ -1259,14 +1259,16 @@ rt_export_feeder_hook(void *_data)
   rtable *tab = c->table;
 
   ASSERT_DIE(c->export_state == TES_FEEDING);
-  lp_flush(c->lp);
 
   if (c->stopped)
     return rt_export_stop_hook(c, 1);
 
   uint bulk = RT_FEED_BULK;
   while (rte_feed(c, c->lp))
+  {
+    lp_flush(c->lp);
     bulk--;
+  }
 
   if (!bulk)
     return ev_send_loop(c->req->loop, c->event);
@@ -1304,7 +1306,6 @@ rt_export_regular_hook(void *_data)
   rtable *tab = c->table;
 
   ASSERT_DIE(c->export_state == TES_READY);
-  lp_flush(c->lp);
 
   if (c->stopped)
     return rt_export_stop_hook(c, 0);
@@ -1322,6 +1323,7 @@ rt_export_regular_hook(void *_data)
   /* Process the export */
   for (uint i=0; i<RT_EXPORT_BULK; i++)
   {
+    lp_flush(c->lp);
     rte_export(c, c->lp, c->rpe_next);
 
     if (!c->rpe_next)
