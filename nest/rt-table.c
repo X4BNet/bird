@@ -890,7 +890,7 @@ static void
 rte_export(struct rt_export_hook *hook, linpool *lp, struct rt_pending_export *rpe)
 {
   if (bmap_test(&hook->seen_map, rpe->seq))
-    return;
+    goto seen;
 
   net *net = rpe->new_best ? rpe->new_best->net : rpe->old_best->net;
   const net_addr *n = net->n.addr;
@@ -975,6 +975,7 @@ rte_export(struct rt_export_hook *hook, linpool *lp, struct rt_pending_export *r
     }
   }
 
+seen:
   /* Cleaning up the old route rejection bit */
   if (rpe->old)
     bmap_clear(&hook->reject_map, rpe->old->id);
