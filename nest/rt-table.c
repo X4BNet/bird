@@ -1250,6 +1250,8 @@ rt_export_prepare_hook(void *_data)
 	return rt_export_feeder_hook(_data);
 }
 
+#define RT_FEED_BULK	64
+
 static void
 rt_export_feeder_hook(void *_data)
 {
@@ -1262,8 +1264,12 @@ rt_export_feeder_hook(void *_data)
   if (c->stopped)
     return rt_export_stop_hook(c, 1);
 
-	  if (rte_feed(c, c->lp))
-	    return ev_send_loop(c->req->loop, c->event);
+  uint bulk = RT_FEED_BULK;
+  while (rte_feed(c, c->lp))
+    bulk--;
+
+  if (!bulk)
+    return ev_send_loop(c->req->loop, c->event);
 
 	  DBG("Export coro %p: feeding done\n", c);
 
@@ -1289,6 +1295,8 @@ rt_export_feeder_hook(void *_data)
     ev_send_loop(c->req->loop, c->event);
 }
 
+#define RT_EXPORT_BULK	1024
+
 static void
 rt_export_regular_hook(void *_data)
 {
@@ -1312,7 +1320,14 @@ rt_export_regular_hook(void *_data)
     return;
 
   /* Process the export */
-  rte_export(c, c->lp, c->rpe_next);
+  for (uint i=0; i<RT_EXPORT_BULK; i++)
+  {
+    rte_export(c, c->lp, c->rpe_next);
+
+    if (!c->rpe_next)
+      return;
+  }
+
   ev_send_loop(c->req->loop, c->event);
 }
 
